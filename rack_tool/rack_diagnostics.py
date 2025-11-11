@@ -4,6 +4,7 @@ import getpass
 import os # Added for path manipulation and directory creation
 from functools import wraps
 import sys
+from datetime import datetime
 import json # Added for loading external configuration
 from remote_client import RemoteClient
 import re
@@ -20,14 +21,17 @@ def test_wrapper(title):
     def decorator(func):
         @wraps(func)
         def wrapper(self, *args, **kwargs):
+            start_time = datetime.now()
             print(f"\n{Colors.BLUE}-----------------------------------------------------------------------------{Colors.NC}")
-            print(f"{Colors.YELLOW}  START: {title}{Colors.NC}")
+            print(f"{Colors.YELLOW}  START: {title} ({start_time.strftime('%Y-%m-%d %H:%M:%S')}){Colors.NC}")
             print(f"{Colors.BLUE}-----------------------------------------------------------------------------{Colors.NC}")
             
             func(self, *args, **kwargs)
             
+            end_time = datetime.now()
+            duration = end_time - start_time
             print(f"\n{Colors.BLUE}-----------------------------------------------------------------------------{Colors.NC}")
-            print(f"{Colors.YELLOW}  END: {title}{Colors.NC}")
+            print(f"{Colors.YELLOW}  END: {title} ({end_time.strftime('%Y-%m-%d %H:%M:%S')}) - Duration: {duration}{Colors.NC}")
             print(f"{Colors.BLUE}-----------------------------------------------------------------------------{Colors.NC}")
         return wrapper
     return decorator
@@ -354,7 +358,36 @@ class Diagnostics:
     @test_wrapper("Checking AALC Leakage Sensor Status (W400)")
     def check_aalc_leakage_sensor_status(self):
         print(f"{Colors.YELLOW}Checking dev-addr 12 for AALC Leakage sensor status:{Colors.NC}")
-        self.w400.run_command("rackmoncli read 12 0x9202")
+        output, exit_code = self.w400.run_command("/usr/local/bin/rackmoncli read 12 0x9202")
+        if exit_code != 0 or not output.strip():
+            print(f"{Colors.RED}Could not read AALC Leakage Sensor status.{Colors.NC}")
+            return
+
+        try:
+            value = int(output.strip(), 16)
+            # Bit descriptions based on the provided mapping
+            descriptions = [
+                "ITRack chassis0 Leakage", "ITRack chassis1 Leakage",
+                "ITRack chassis2 Leakage", "ITRack chassis3 Leakage",
+                "RPU Internal Leakage Abnormal", "RPU External Leakage Abnormal",
+                "RPU Opt Leakage 1 Abnormal", "RPU Opt Leakage 2 Abnormal",
+                "HEX Internal Leakage (GPO)", "HEX External Leakage (GPO)",
+                "HEX Internal Leakage(Relay)", "HEX External Leakage(Relay)",
+                "HEX Rack Pan Leakage Error", "HEX Rack Floor Leakage Error"
+            ]
+
+            print("\n--- Parsed Leakage Sensor Status (1 = Abnormal) ---")
+            for i in range(len(descriptions)):
+                # Check if the i-th bit is set
+                is_abnormal = (value >> i) & 1
+                
+                description = descriptions[i]
+                color = Colors.RED if is_abnormal else Colors.GREEN
+                status_text = "Abnormal" if is_abnormal else "Normal"
+                print(f"{description:<35}: {color}{status_text}{Colors.NC}")
+
+        except (ValueError, IndexError):
+            print(f"{Colors.RED}Failed to parse the hexadecimal output: '{output.strip()}'{Colors.NC}")
 
     # --- W400 x86 Specific Functions ---
     @test_wrapper("Checking x86 CPU and Memory Info (W400 x86)")
@@ -373,6 +406,30 @@ class Diagnostics:
             (cd /usr/local/cls_diag/SDK/ && cat Version);
         """
         self.w400_x86.run_command(cmd)
+
+    @test_wrapper("Wedge400 400G Optical Module DMM/VDM Monitor")
+    def check_w400_400g_module_monitor(self):
+        if not self.w400_x86:
+            print(f"{Colors.RED}W400 x86 client is not connected. Cannot run this test.{Colors.NC}")
+            return
+
+        try:
+            port_num = int(input("Enter the port number to monitor: "))
+        except ValueError:
+            print(f"{Colors.RED}Invalid input. Please enter a valid port number.{Colors.NC}")
+            return
+
+        base_cmd = "/usr/local/cls_diag/bin/cel-qsfp-test"
+        reset_on_cmd = f"{base_cmd} -p0 --reset=on"
+        monitor_cmd = f"{base_cmd} -p{port_num} -i"
+        reset_off_cmd = f"{base_cmd} -p0 --reset=off"
+
+        try:
+            self.w400_x86.run_command(reset_on_cmd)
+            self.w400_x86.run_command(monitor_cmd)
+        finally:
+            print(f"\n{Colors.YELLOW}Cleaning up: Turning port reset off...{Colors.NC}")
+            self.w400_x86.run_command(reset_off_cmd)
 
     @test_wrapper("Checking Wedge400 Sensor Status (W400 x86)")
     def check_w400_sensor_status(self):
@@ -673,6 +730,7 @@ class Menu:
         self.w400_x86_menu_items = [
             ("Check CPU and Memory Info", self.diag.check_x86_resources),
             ("Check W400 x86 SW/FW Versions", self.diag.check_w400_x86_versions),
+            ("400G Optical Module DMM/VDM Monitor", self.diag.check_w400_400g_module_monitor),
         ]
         self.th6_menu_items = [
             ("Check Uptime", self.diag.check_th6_uptime),
@@ -683,8 +741,8 @@ class Menu:
             ("Set Transceivers Low Power Mode", self.diag.set_th6_xcvr_low_power_mode),
             ("Check 1.6T Optical Module Version", self.diag.check_th6_optical_module_version),
             ("Check Fan PWM Values", self.diag.check_fan_pwm_values),
-            ("Set Fan PWM Value", self.diag.set_fan_pwm_value),
             ("Check Fan Speed (RPM)", self.diag.check_fan_speed_rpm),
+            ("Set Fan PWM Value", self.diag.set_fan_pwm_value),
         ]
 
     def _show_menu(self, title, menu_items):
