@@ -1,0 +1,23 @@
+{
+    "rmc_ip": "192.168.1.191",
+        "w400_ip": "192.168.1.206",
+        "username": "root",
+        "password": "",
+        "w400_x86_ip": "192.168.100.1",
+        "w400_x86_username": "root",
+        "w400_x86_password": "",
+        "th6_devices": [
+            {"ip": "192.168.1.191", "username": "root", "password": "11"},
+            {"ip": "192.168.1.206", "username": "root", "password": "11"},
+            {"ip": "192.168.1.123", "username": "root", "password": "11"},
+            {"ip": "192.168.1.216", "username": "root", "password": "11"},
+            {"ip": "192.168.1.221", "username": "root", "password": "11"},
+            {"ip": "192.168.1.131", "username": "root", "password": "11"},
+            {"ip": "192.168.1.190", "username": "root", "password": "11"},
+            {"ip": "192.168.1.156", "username": "root", "password": "11"},
+            {"ip": "192.168.1.215", "username": "root", "password": "11"},
+            {"ip": "192.168.1.166", "username": "root", "password": "11"},
+            {"ip": "192.168.1.232", "username": "root", "password": "11"},
+            {"ip": "192.168.1.208", "username": "root", "password": "11"}
+        ]
+}
