@@ -399,15 +399,45 @@ class Diagnostics:
     def check_th6_xcvr_reset_status(self):
         for i, th6_client in enumerate(self.th6_clients, 1):
             print(f"\n{Colors.CYAN}--- Checking Reset Status on TH6-{i} ({th6_client.hostname}) ---{Colors.NC}")
-            command = "for f in /sys/bus/auxiliary/devices/fboss_iob_pci.xcvr_ctrl.*/xcvr_reset_*; do echo -n \"$f: \"; cat \"$f\"; done"
-            th6_client.run_command(command)
+            command = "for f in /sys/bus/auxiliary/devices/fboss_iob_pci.xcvr_ctrl.*/xcvr_reset_*; do echo \"$f:$(cat $f)\"; done"
+            output, exit_code = th6_client.run_command(command, print_output=False)
+
+            if exit_code == 0 and output.strip():
+                for line in output.strip().splitlines():
+                    try:
+                        path, value = line.split(':', 1)
+                        raw_value = value.strip()
+                        if raw_value == '0x0':
+                            status_text = f"{Colors.GREEN}Release{Colors.NC}"
+                        elif raw_value == '0x1':
+                            status_text = f"{Colors.YELLOW}Reset{Colors.NC}"
+                        else:
+                            status_text = f"{Colors.RED}Unknown{Colors.NC}"
+                        print(f"{path.strip()}: {raw_value} ({status_text})")
+                    except ValueError:
+                        continue # Ignore lines that don't parse correctly
 
     @test_wrapper("Checking TH6 OM Low Power Status")
     def check_th6_om_low_power_status(self):
         for i, th6_client in enumerate(self.th6_clients, 1):
             print(f"\n{Colors.CYAN}--- Checking Low Power Status on TH6-{i} ({th6_client.hostname}) ---{Colors.NC}")
-            command = "for f in /sys/bus/auxiliary/devices/fboss_iob_pci.xcvr_ctrl.*/xcvr_low_power_*; do echo -n \"$f: \"; cat \"$f\"; done"
-            th6_client.run_command(command)
+            command = "for f in /sys/bus/auxiliary/devices/fboss_iob_pci.xcvr_ctrl.*/xcvr_low_power_*; do echo \"$f:$(cat $f)\"; done"
+            output, exit_code = th6_client.run_command(command, print_output=False)
+
+            if exit_code == 0 and output.strip():
+                for line in output.strip().splitlines():
+                    try:
+                        path, value = line.split(':', 1)
+                        raw_value = value.strip()
+                        if raw_value == '0x0':
+                            status_text = f"{Colors.GREEN}High Power Mode{Colors.NC}"
+                        elif raw_value == '0x1':
+                            status_text = f"{Colors.YELLOW}Low Power Mode{Colors.NC}"
+                        else:
+                            status_text = f"{Colors.RED}Unknown{Colors.NC}"
+                        print(f"{path.strip()}: {raw_value} ({status_text})")
+                    except ValueError:
+                        continue # Ignore lines that don't parse correctly
 
     @test_wrapper("Set TH6 Transceivers Reset Mode")
     def set_th6_xcvr_reset_mode(self):
@@ -444,6 +474,60 @@ class Diagnostics:
             print(f"\n{Colors.CYAN}--- Setting Low Power Mode to '{mode_choice}' on TH6-{i} ({th6_client.hostname}) ---{Colors.NC}")
             command = f"for f in /sys/bus/auxiliary/devices/fboss_iob_pci.xcvr_ctrl.*/xcvr_low_power_*; do echo {value} > \"$f\" && echo \"Set $f to {value}\"; done"
             th6_client.run_command(command)
+
+    @test_wrapper("Checking Total PSU Output Power (W400)")
+    def check_psu_output_power(self):
+        psu_addrs = list(range(144, 150)) + list(range(154, 160))
+        total_power = 0.0
+        
+        print("Running initial rescan...")
+        self.w400.run_command("rackmoncli rescan", print_output=False)
+
+        for addr in psu_addrs:
+            print(f"Querying PSU at address {addr} for Output Power...")
+            # Use a more specific grep to avoid matching _Inst or other variants
+            command = f"rackmoncli data --dev-addr {addr} | grep -w PSU_Output_Power"
+            output, exit_code = self.w400.run_command(command, print_output=False)
+            if exit_code == 0 and output.strip():
+                try:
+                    for line in output.strip().splitlines():
+                        if 'PSU_Output_Power' in line and 'Inst' not in line:
+                            power_str = line.split(':')[1].strip()
+                            power_value = float(power_str)
+                            total_power += power_value
+                            print(f"  -> Found: {power_value:.3f} Watts")
+                            break # Found the correct line
+                except (ValueError, IndexError):
+                    print(f"{Colors.RED}  -> Could not parse power value from: {output.strip()}{Colors.NC}")
+        
+        print(f"\n{Colors.GREEN}Total PSU Output Power: {total_power:.3f} Watts{Colors.NC}")
+
+    @test_wrapper("Checking Total PSU Input Power (W400)")
+    def check_psu_input_power(self):
+        psu_addrs = list(range(144, 150)) + list(range(154, 160))
+        total_power = 0.0
+
+        print("Running initial rescan...")
+        self.w400.run_command("rackmoncli rescan", print_output=False)
+
+        for addr in psu_addrs:
+            print(f"Querying PSU at address {addr} for Input Power...")
+            # Use a more specific grep to avoid matching _Inst or other variants
+            command = f"rackmoncli data --dev-addr {addr} | grep -w PSU_Input_Power"
+            output, exit_code = self.w400.run_command(command, print_output=True) # Print output for this one
+            if exit_code == 0 and output.strip():
+                try:
+                    for line in output.strip().splitlines():
+                        if 'PSU_Input_Power' in line and 'Inst' not in line:
+                            power_str = line.split(':')[1].strip()
+                            power_value = float(power_str)
+                            total_power += power_value
+                            break # Found the correct line
+                except (ValueError, IndexError):
+                    # The value is printed by run_command, so we just note the parsing failure
+                    print(f"{Colors.RED}  -> Could not parse power value from line above.{Colors.NC}")
+
+        print(f"\n{Colors.GREEN}Total PSU Input Power: {total_power:.3f} Watts{Colors.NC}")
 
     @test_wrapper("Checking TH6 Fan PWM Values")
     def check_fan_pwm_values(self):
@@ -520,7 +604,7 @@ class Diagnostics:
             self.check_fan_pwm_values()
             self.check_fan_speed_rpm()
             # The optical module version is RMC-side, not TH6-side
-            # self.check_th6_optical_module_version()
+            self.check_th6_optical_module_version()
         print(f"\n{Colors.GREEN}All TH6 tests complete.{Colors.NC}")
 
     def run_all_w400_tests(self):
@@ -571,7 +655,6 @@ class Menu:
             ("Check RMC FRU Information", self.diag.check_rmc_fru_info),
             ("Check RMC Sensor Status", self.diag.check_rmc_sensor_status),
             ("Check RMC Boot Slot", self.diag.check_rmc_boot_slot),
-            ("Check TH6 1.6T Optical Module Version (via RMC)", self.diag.check_th6_optical_module_version),
         ]
         self.w400_menu_items = [
             ("Power Source Detect", self.diag.check_power_source),
@@ -584,7 +667,8 @@ class Menu:
             ("Check ALLC Sensor Status", self.diag.check_allc_sensor_status),
             ("Check W400 FRU Information", self.diag.check_w400_fru_info),
             ("Check AALC Leakage Sensor Status", self.diag.check_aalc_leakage_sensor_status),
-            ("Check W400 Sensor Status", self.diag.check_w400_sensor_status),
+            ("Check Total PSU Output Power", self.diag.check_psu_output_power),
+            ("Check Total PSU Input Power", self.diag.check_psu_input_power),
         ]
         self.w400_x86_menu_items = [
             ("Check CPU and Memory Info", self.diag.check_x86_resources),
@@ -597,7 +681,7 @@ class Menu:
             ("Check Transceiver Low Power Status", self.diag.check_th6_om_low_power_status),
             ("Set Transceivers Reset Mode", self.diag.set_th6_xcvr_reset_mode),
             ("Set Transceivers Low Power Mode", self.diag.set_th6_xcvr_low_power_mode),
-            ("Check 1.6T Optical Module Version (via RMC)", self.diag.check_th6_optical_module_version),
+            ("Check 1.6T Optical Module Version", self.diag.check_th6_optical_module_version),
             ("Check Fan PWM Values", self.diag.check_fan_pwm_values),
             ("Set Fan PWM Value", self.diag.set_fan_pwm_value),
             ("Check Fan Speed (RPM)", self.diag.check_fan_speed_rpm),

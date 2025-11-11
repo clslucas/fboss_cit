@@ -75,7 +75,7 @@ class RemoteClient:
             self.connect()
         return self.client
 
-    def run_command(self, command): # Removed command_timeout as it's not used in this script
+    def run_command(self, command, print_output=True): # Removed command_timeout as it's not used in this script
         """
         Executes a command on the remote host, prints the output to console,
         and optionally logs it to a file.
@@ -102,8 +102,9 @@ class RemoteClient:
             stdout_lines = list(iter(stdout.readline, ""))
             stdout_str = "".join(stdout_lines)
 
-            # Print to console
-            print(stdout_str, end="")
+            # Print to console if requested
+            if print_output:
+                print(stdout_str, end="")
             
             # Buffer stderr
             for line in iter(stderr.readline, ""):
