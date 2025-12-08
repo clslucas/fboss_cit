@@ -8,10 +8,10 @@
 
 ## Table of Contents
 1. [Environment Overview](#environment-overview)
-2. [Network Architecture Design](#network-architecture-design)
-3. [Ubuntu DHCP Server Configuration](#ubuntu-dhcp-server-configuration)
-4. [CentOS TFTP/HTTP Server Configuration](#centos-tftphttp-server-configuration)
-5. [PXE Boot Menu Configuration](#pxe-boot-menu-configuration)
+2. [Ubuntu DHCP Server Configuration](#ubuntu-dhcp-server-configuration)
+3. [Ubuntu TFTP/HTTP Server Configuration](#ubuntu-tftphttp-server-configuration)
+4. [PXE Boot Menu Configuration](#pxe-boot-menu-configuration)
+5. [GRUB2 Boot Menu Configuration (for UEFI)](#grub2-boot-menu-configuration-for-uefi)
 6. [Kickstart Automated Installation Configuration](#kickstart-automated-installation-configuration)
 7. [Service Startup and Verification](#service-startup-and-verification)
 8. [Client Installation Test](#client-installation-test)
@@ -32,32 +32,6 @@
 - **IPv6 Network Segment**: fd00:1234:5678:1::/64
 - **IPv6 DHCP Range**: fd00:1234:5678:1::100 - fd00:1234:5678:1::200
 - **DNS**: 8.8.8.8, 8.8.4.4, 2001:4860:4860::8888
-
-## Network Architecture Design
-
-
-
-+---------------------+
-
-|   Network Switch    |
-
-+----------+----------+
-
-|
-
-+-------------------+
-
-|                   |                   |
-
-+--------------------------+   +----------------------+
-
-| Ubuntu Server            |   | PXE Client           |
-
-| (DHCP, TFTP, HTTP)       |   | (To be installed)    |
-
-| 192.168.1.10             |   | Gets IP via DHCP     |
-
-+--------------------------+   +----------------------+
 
 
 ## Ubuntu DHCP Server Configuration
@@ -129,6 +103,32 @@ subnet 192.168.1.0 netmask 255.255.255.0 {
 }
 ```
 
+### Assigning Static IP Addresses (Optional)
+To assign a fixed IP address to a specific client, you can add a `host` block based on its MAC address.
+
+**For IPv4:**
+Edit `/etc/dhcp/dhcpd.conf` and add a host definition. This ensures a client always gets the same IPv4 address.
+
+
+```ini
+host pxe-client-01 {
+  hardware ethernet 08:00:27:12:34:56; # Replace with client's MAC address
+  fixed-address 192.168.1.50;        # Replace with the desired static IP
+}
+```
+
+
+**For IPv6:**
+Edit `/etc/dhcp/dhcpd6.conf` to assign a fixed IPv6 address.
+
+
+```ini
+host pxe-client-01 {
+  hardware ethernet 08:00:27:12:34:56;      # Replace with client's MAC address
+  fixed-address6 fd00:1234:5678:1::50;    # Replace with the desired static IPv6
+}
+```
+### Configure DHCPv6 Service
 Edit `/etc/dhcp/dhcpd6.conf`:
 
 ```ini
@@ -183,36 +183,7 @@ subnet6 fd00:1234:5678:1::/64 {
 
 ```
 
-### Assigning Static IP Addresses (Optional)
-To assign a fixed IP address to a specific client, you can add a `host` block based on its MAC address.
-
-**For IPv4:**
-Edit `/etc/dhcp/dhcpd.conf` and add a host definition. This ensures a client always gets the same IPv4 address.
-
-
-```ini
-host pxe-client-01 {
-  hardware ethernet 08:00:27:12:34:56; # Replace with client's MAC address
-  fixed-address 192.168.1.50;        # Replace with the desired static IP
-}
-```
-
-
-**For IPv6:**
-Edit `/etc/dhcp/dhcpd6.conf` to assign a fixed IPv6 address.
-
-
-```ini
-host pxe-client-01 {
-  hardware ethernet 08:00:27:12:34:56;      # Replace with client's MAC address
-  fixed-address6 fd00:1234:5678:1::50;    # Replace with the desired static IPv6
-}
-```
-
-
 ### Start DHCP Service
-
-
 ```bash
 sudo systemctl enable --now isc-dhcp-server
 sudo systemctl enable --now isc-dhcp-server6
@@ -225,13 +196,11 @@ sudo systemctl status isc-dhcp-server6
 ## Ubuntu TFTP/HTTP Server Configuration
 
 ### Install Necessary Packages
-
-
 ```bash
 
 sudo apt update
 
-sudo apt install -y tftpd-hpa apache2 syslinux-common pxelinux wget rsync createrepo-c
+sudo apt install -y tftpd-hpa apache2 syslinux-common pxelinux wget createrepo-c
 ```
 
 ### Configure TFTP Service
@@ -311,57 +280,12 @@ sudo cp /path/to/my-custom-tool-1.0-1.el9.x86_64.rpm /var/www/html/centos/9-stre
 # Update the repository metadata
 sudo createrepo_c --update /var/www/html/centos/9-stream/custom/x86_64/
 
-# 2. Use rsync to download the BaseOS repository.
-echo "Syncing BaseOS repository... This will take a while."
-sudo rsync -avz --delete rsync://rsync.centos.org/centos/9-stream/BaseOS/x86_64/os/ /var/www/html/centos/9-stream/BaseOS/x86_64/os/
-
-# 3. Use rsync to download the AppStream repository.
-echo "Syncing AppStream repository... This will also take a while."
-sudo rsync -avz --delete rsync://rsync.centos.org/centos/9-stream/AppStream/x86_64/os/ /var/www/html/centos/9-stream/AppStream/x86_64/os/
-# 4. Verify that the files are accessible via HTTP
+# 2. Verify that the files are accessible via HTTP
 # This command should return a 200 OK status code and list directory contents.
 curl -g http://192.168.1.2/centos/9-stream/BaseOS/x86_64/os/
 
 echo "Local mirror creation complete."
 ```
-
-#### Automate Mirror Updates with Cron
-
-To keep your local mirror current, you can create a cron job that runs the `rsync` commands on a schedule (e.g., daily).
-
-```bash
-# 1. Create a sync script.
-# This script will contain the rsync commands and log the output
-sudo tee /usr/local/bin/update_centos_mirror.sh > /dev/null <<'EOF'
-#!/bin/bash
-
-LOG_FILE="/var/log/centos_mirror_sync.log"
-
-echo "========================================" >> $LOG_FILE
-echo "Sync started at $(date)" >> $LOG_FILE
-
-# Sync BaseOS repository
-rsync -avz --delete rsync://rsync.centos.org/centos/9-stream/BaseOS/x86_64/os/ /var/www/html/centos/9-stream/BaseOS/x86_64/os/ >> $LOG_FILE 2>&1
-
-# Sync AppStream repository
-rsync -avz --delete rsync://rsync.centos.org/centos/9-stream/AppStream/x86_64/os/ /var/www/html/centos/9-stream/AppStream/x86_64/os/ >> $LOG_FILE 2>&1
-
-echo "Sync finished at $(date)" >> $LOG_FILE
-echo "========================================" >> $LOG_FILE
-EOF
-
-# 2. Make the script executable
-sudo chmod +x /usr/local/bin/update_centos_mirror.sh
-
-# 3. Add a cron job to run the script
-# This example runs the script every day at 2:00 AM
-# Use `sudo crontab -e` to edit the root user's crontab and add the following line:
-0 2 * * * /usr/local/bin/update_centos_mirror.sh
-
-# You can check the log file to see the sync history:
-tail -f /var/log/centos_mirror_sync.log
-```
-
 
 ## PXE Boot Menu Configuration
 
@@ -424,144 +348,7 @@ menuentry 'Boot from Local Drive' {
 }
 ```
 
-### Create Centralized SSH Key Files (Recommended)
-
-Instead of hardcoding SSH keys inside the Kickstart file, it's better practice to host them in separate files on your HTTP server. This makes key management much easier.
-
-1.  Create files on your web server to hold the public keys for each user.
-    ```bash
-    sudo touch /var/www/html/ks/authorized_keys_root
-    sudo touch /var/www/html/ks/authorized_keys_test
-    ```
-
-2.  Add the public SSH key(s) for the `root` user.
-    ```bash
-    # Replace with the root user's public SSH key
-    echo "ssh-rsa AAAA... root-key-comment" | sudo tee /var/www/html/ks/authorized_keys_root
-    ```
-
-3.  Add the public SSH key(s) for the `test` user.
-    ```bash
-    # Replace with the test user's public SSH key
-    echo "ssh-rsa AAAA... test-user-key-comment" | sudo tee /var/www/html/ks/authorized_keys_test
-    ```
-
 # Kickstart Automated Installation Configuration
-
-## 1. Create a Directory for Snippets `/var/www/html/ks/snippets`:
-1.  Create the directory to hold snippet files.
-```bash
-sudo mkdir -p /var/www/html/ks/snippets
-```
-
-2.  Create snippet files for package groups and post-install tasks.
-```bash
-# Snippet for base packages
-sudo tee /var/www/html/ks/snippets/packages-base.ks > /dev/null <<'EOF'
-@^minimal-environment
-@"Development Tools"
-vim-enhanced
-wget
-curl
-git
-bash-completion
-policycoreutils-python-utils
-lldpad
-my-custom-tool # <-- Add your custom package name here
-EOF
-
-# Snippet for web server packages
-sudo tee /var/www/html/ks/snippets/packages-web.ks > /dev/null <<'EOF'
-httpd
-EOF
-
-# Snippet for database server packages
-sudo tee /var/www/html/ks/snippets/packages-db.ks > /dev/null <<'EOF'
-mariadb-server
-EOF
-
-# Snippet for base post-install tasks (hostname, SSH keys, first-boot script)
-sudo tee /var/www/html/ks/snippets/post-base-setup.ks > /dev/null <<'EOF'
-#!/bin/bash
-# This snippet is included in the main %post script.
-
-echo "--- Running Base Post-Install Setup ---"
-
-# --- Dynamically find the PXE server IP ---
-REPO_URL=$(grep -o 'inst.repo=[^ ]*' /proc/cmdline | cut -d'=' -f2)
-SERVER_IP=$(echo "$REPO_URL" | awk -F/ '{print $3}' | sed -e 's/\[//' -e 's/\]//')
-echo "Detected PXE server IP: ${SERVER_IP}"
-
-# --- User SSH Key Setup ---
-echo "Configuring SSH keys for users..."
-# Root
-install -d -m 700 -o root -g root /root/.ssh
-curl -s -o /root/.ssh/authorized_keys "http://${SERVER_IP}/ks/authorized_keys_root"
-chmod 600 /root/.ssh/authorized_keys
-chown root:root /root/.ssh/authorized_keys
-# Test
-install -d -m 700 -o test -g test /home/test/.ssh
-curl -s -o /home/test/.ssh/authorized_keys "http://${SERVER_IP}/ks/authorized_keys_test"
-chmod 600 /home/test/.ssh/authorized_keys
-chown test:test /home/test/.ssh/authorized_keys
-# Appuser
-install -d -m 700 -o appuser -g appuser /apphome/.ssh
-curl -s -o /apphome/.ssh/authorized_keys "http://${SERVER_IP}/ks/authorized_keys_appuser"
-chmod 600 /apphome/.ssh/authorized_keys
-chown appuser:appuser /apphome/.ssh/authorized_keys
-echo "SSH keys configured."
-
-# --- System Configuration ---
-echo "Setting system hostname..."
-IP_ADDR=$(hostname -I | awk '{print $1}' | tr '.' '-')
-hostnamectl set-hostname "host-${IP_ADDR}"
-echo "Hostname set to $(hostname)."
-
-# --- First Boot Script Setup (via systemd) ---
-echo "Configuring first-boot service..."
-cat > /usr/local/bin/firstboot.sh <<'FBOOT_SH'
-#!/bin/bash
-echo "First boot script executed successfully on $(date)" > /root/first_boot_ran.log
-systemctl disable firstboot.service
-FBOOT_SH
-chmod +x /usr/local/bin/firstboot.sh
-
-cat > /etc/systemd/system/firstboot.service <<'FBOOT_SVC'
-[Unit]
-Description=One-time script to run on first boot
-After=network-online.target
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/firstboot.sh
-[Install]
-WantedBy=multi-user.target
-FBOOT_SVC
-systemctl enable firstboot.service
-echo "First-boot service enabled."
-EOF
-
-# Snippet for web server post-install configuration
-sudo tee /var/www/html/ks/snippets/post-role-web.ks > /dev/null <<'EOF'
-#!/bin/bash
-echo "Configuring as a web server..."
-systemctl enable httpd
-echo "<h1>Web Server - Deployed via PXE</h1>" > /var/www/html/index.html
-firewall-cmd --add-service=http --permanent
-echo "Web server configuration complete."
-EOF
-
-# Snippet for database server post-install configuration
-sudo tee /var/www/html/ks/snippets/post-role-db.ks > /dev/null <<'EOF'
-#!/bin/bash
-echo "Configuring as a database server..."
-systemctl enable mariadb
-firewall-cmd --add-service=mysql --permanent
-echo "Database server configuration complete."
-EOF
-```
-
-## 2. Create a Directory for Snippets `/var/www/html/ks/snippets`:
-
 Create `/var/www/html/ks/centos9-ks.cfg`:
 
 ```kickstart
@@ -793,6 +580,46 @@ echo "Setting system hostname..."
 IP_ADDR=$(hostname -I | awk '{print $1}' | tr '.' '-')
 hostnamectl set-hostname "host-${IP_ADDR}"
 
+# --- Create PXE Re-install Utility ---
+echo "Creating /usr/local/sbin/pxe-reinstall utility..."
+cat > /usr/local/sbin/pxe-reinstall <<'REINSTALL_SCRIPT'
+#!/bin/bash
+
+PXE_SERVER_IP="${SERVER_IP}"
+if [ -z "$PXE_SERVER_IP" ]; then
+    echo "Error: Could not determine PXE Server IP. Cannot create pxe-reinstall script."
+    exit 0 # Exit gracefully from post-install
+fi
+
+API_PORT="5001"
+
+# Find the MAC address of the first active, non-virtual interface
+MAC_ADDR=$(ip -o link show | awk '!/LOOPBACK/ && /LOWER_UP/ {print $17; exit}')
+
+if [ -z "$MAC_ADDR" ]; then
+    echo "Error: Could not determine an active MAC address."
+    exit 1
+fi
+
+echo "This script will configure the server to boot from PXE on the next reboot."
+echo "Server MAC Address: $MAC_ADDR"
+read -p "Are you sure you want to continue? (y/n) " -n 1 -r
+echo
+if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    echo "Aborted."
+    exit 1
+fi
+
+echo "Enabling PXE boot for next reboot..."
+curl -s -X POST -H "Content-Type: application/json" \
+    -d "{\"mac\": \"$MAC_ADDR\"}" \
+    "http://${PXE_SERVER_IP}:${API_PORT}/pxe/enable"
+
+echo "Done. Please reboot the server to begin the installation."
+REINSTALL_SCRIPT
+
+chmod +x /usr/local/sbin/pxe-reinstall
+
 # --- Role-Specific Post-Install Tasks ---
 case "$ROLE" in
      web)
@@ -820,6 +647,17 @@ echo "Enabling root SSH login with password..."
 # Ensure PermitRootLogin is set to 'yes' to allow root login.
 sed -i 's/.*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
  
+# --- Disable PXE Boot for this Host ---
+echo "Disabling PXE boot for this host to ensure local boot on next startup..."
+MAC_ADDR=$(ip -o link show | awk '!/LOOPBACK/ && /LOWER_UP/ {print $17; exit}')
+if [ -n "$MAC_ADDR" ]; then
+    curl -s -X POST -H "Content-Type: application/json" \
+        -d "{\"mac\": \"$MAC_ADDR\"}" \
+        "http://${SERVER_IP}:5001/pxe/disable"
+else
+    echo "Warning: Could not determine MAC address to disable PXE boot."
+fi
+
 echo "Performing final system update. This may take a few minutes..."
 # Install epel-release first, then update all packages.
 #dnf -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm && dnf -y update
@@ -855,6 +693,7 @@ sudo ufw allow 547/udp    # DHCPv6 (for IPv6)
 sudo ufw allow 69/udp     # TFTP
 sudo ufw allow 80/tcp     # HTTP
 sudo ufw allow 443/tcp    # HTTPS (if you decide to use it)
+sudo ufw allow 5001/tcp   # PXE Control API
 sudo ufw allow ssh        # SSH for remote management
 
 # Enable the firewall
@@ -890,11 +729,11 @@ curl -g -I http://[fd00:1234:5678:1::10]/ks/centos9-ks.cfg
   - Check service status: `sudo systemctl status <service-name>`
   - View logs: `tail -f /var/log/syslog` or specific log files.
 - **References**:
-  - [ISC DHCP Server Documentation](https://kb.isc.org/docs/isc-dhcp-44-manual-pages)
-  - [TFTPD-HPA Documentation](http://manpages.ubuntu.com/manpages/bionic/man5/tftpd-hpa.conf.5.html)
+  - [ISC DHCP Server Documentation](https://kb.isc.org/docs/documentation)
+  - [TFTPD-HPA Documentation](https://manpages.debian.org/stable/tftpd-hpa/tftpd.8.en.html)
   - [Apache HTTP Server Documentation](https://httpd.apache.org/docs/)
-    - [CentOS Stream 9 Installation Guide](https://docs.centos.org/en-US/centos/install-guide/)
-    - [Kickstart Documentation](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/performing_a_standard_rhel_installation/assembly_kickstart-installations_performing-a-standard-rhel-installation)
+    - [RHEL 9 Installation Guide](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/performing_a_standard_rhel_9_installation/index)
+    - [Kickstart Documentation](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/performing_an_advanced_rhel_9_installation/kickstart-reference_installing-rhel-as-an-experienced-user)
 - **Log Locations**:
   - DHCP Server: `/var/log/syslog`
   - TFTP Server: `/var/log/syslog`
