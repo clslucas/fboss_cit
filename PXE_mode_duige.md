@@ -106,11 +106,14 @@ authoritative;
 option client-arch code 93 = unsigned integer 16;
 
 subnet 192.168.1.0 netmask 255.255.255.0 {
-
     range 192.168.1.100 192.168.1.200;
     option routers 192.168.1.1;
     option subnet-mask 255.255.255.0;
     next-server 192.168.1.2;
+
+    # --- Host Definitions for Allowed Clients ---
+    # Add a 'host' block for each machine you want to allow.
+    # These clients will be assigned a specific IP address.
 
     # Default to BIOS boot file
     filename "pxelinux.0";
@@ -134,12 +137,24 @@ default-lease-time 600;
 max-lease-time 7200;
 authoritative;
 
+# Deny requests from unknown clients for enhanced security.
+deny unknown-clients;
+
 option dhcp6.name-servers 2001:4860:4860::8888, 2001:4860:4860::8844;
 
 
 subnet6 fd00:1234:5678:1::/64 {
-    range6 fd00:1234:5678:1::100 fd00:1234:5678:1::200;
+    # This pool is only available to clients defined in 'host' blocks
+    # that do not have a 'fixed-address6' specified.
+    pool6 {
+        range6 fd00:1234:5678:1::100 fd00:1234:5678:1::200;
+        allow known-clients;
+    }
 
+    # --- Host Definitions for Allowed Clients ---
+    # Add a 'host' block for each machine you want to allow.
+    # These clients will be assigned a specific IPv6 address.
+    
     # Provide the router (gateway) for the IPv6 subnet. This is critical for connectivity.
     #option dhcp6.routers fd00:1234:5678:1::1;
 
@@ -153,6 +168,16 @@ subnet6 fd00:1234:5678:1::/64 {
     } else {
         # Default for other UEFI clients, though BIOS clients use IPv4/DHCPv4.
         option dhcp6.bootfile-url "tftp://[fd00:1234:5678:1::10]/pxelinux.0";
+    }
+
+    host pxe-client-01 {
+      hardware ethernet 88:5a:23:34:0d:65;      # Client 1 MAC address
+      fixed-address6 fd00:1234:5678:1::50;
+    }
+
+    host pxe-client-02 {
+      hardware ethernet 88:5a:23:34:0e:7d;      # Client 2 MAC address
+      fixed-address6 fd00:1234:5678:1::51;
     }
 }
 
@@ -206,7 +231,7 @@ sudo systemctl status isc-dhcp-server6
 
 sudo apt update
 
-sudo apt install -y tftpd-hpa apache2 syslinux-common pxelinux wget rsync
+sudo apt install -y tftpd-hpa apache2 syslinux-common pxelinux wget rsync createrepo-c
 ```
 
 ### Configure TFTP Service
@@ -223,7 +248,6 @@ TFTP_OPTIONS="--secure --create"
 
 ### Configure HTTP Service
 
-
 ```bash
 sudo mkdir -p /var/www/html/ks
 
@@ -232,7 +256,6 @@ sudo systemctl enable --now apache2
 
 
 ### Prepare Installation Files
-
 
 ```bash
 # Create TFTP directory structure
@@ -280,6 +303,14 @@ To avoid relying on an internet connection during installation and to speed up t
 sudo mkdir -p /var/www/html/centos/9-stream/BaseOS/x86_64/os/
 sudo mkdir -p /var/www/html/centos/9-stream/AppStream/x86_64/os/
 
+# Create the directory
+sudo mkdir -p /var/www/html/centos/9-stream/custom/x86_64/
+
+# Copy your custom RPM into it (replace with your actual RPM file)
+sudo cp /path/to/my-custom-tool-1.0-1.el9.x86_64.rpm /var/www/html/centos/9-stream/custom/x86_64/
+# Update the repository metadata
+sudo createrepo_c --update /var/www/html/centos/9-stream/custom/x86_64/
+
 # 2. Use rsync to download the BaseOS repository.
 echo "Syncing BaseOS repository... This will take a while."
 sudo rsync -avz --delete rsync://rsync.centos.org/centos/9-stream/BaseOS/x86_64/os/ /var/www/html/centos/9-stream/BaseOS/x86_64/os/
@@ -289,7 +320,7 @@ echo "Syncing AppStream repository... This will also take a while."
 sudo rsync -avz --delete rsync://rsync.centos.org/centos/9-stream/AppStream/x86_64/os/ /var/www/html/centos/9-stream/AppStream/x86_64/os/
 # 4. Verify that the files are accessible via HTTP
 # This command should return a 200 OK status code and list directory contents.
-curl -g http://[fd00:1234:5678:1::10]/centos/9-stream/BaseOS/x86_64/os/
+curl -g http://192.168.1.2/centos/9-stream/BaseOS/x86_64/os/
 
 echo "Local mirror creation complete."
 ```
@@ -352,7 +383,7 @@ MENU LABEL ^Automated CentOS Stream 9 Installation
 
 KERNEL images/centos9/vmlinuz
 
-APPEND initrd=images/centos9/initrd.img ip=dhcp inst.repo=http://192.168.1.2/centos/9-stream/install inst.text inst.ks=http://192.168.1.2/ks/centos9-ks.cfg biosdevname=0 net.ifnames=0 console=ttyS0,57600n8
+APPEND initrd=images/centos9/initrd.img ip=dhcp inst.repo=http://192.168.1.2/centos/9-stream/install inst.text inst.ks=http://192.168.1.2/ks/centos9-ks.cfg biosdevname=0 net.ifnames=0 console=ttyS0,57600n8 inst.cmdline
 
 LABEL manual_install
 
@@ -379,7 +410,7 @@ Create `/var/lib/tftpboot/grub.cfg`. This is the configuration file for UEFI cli
 set timeout=10
 
 menuentry 'Automated CentOS Stream 9 Installation (UEFI)' {
-    linuxefi images/centos9/vmlinuz ip=dhcp inst.repo=http://192.168.1.2/centos/9-stream/install inst.text inst.ks=http://192.168.1.2/ks/centos9-ks.cfg biosdevname=0 net.ifnames=0 console=ttyS0,57600n8
+    linuxefi images/centos9/vmlinuz ip=dhcp inst.repo=http://192.168.1.2/centos/9-stream/install inst.text inst.ks=http://192.168.1.2/ks/centos9-ks.cfg biosdevname=0 net.ifnames=0 console=ttyS0,57600n8 inst.cmdline
     initrdefi images/centos9/initrd.img
 }
 
@@ -392,8 +423,6 @@ menuentry 'Boot from Local Drive' {
     exit
 }
 ```
-
-## Kickstart Automated Installation Configuration
 
 ### Create Centralized SSH Key Files (Recommended)
 
@@ -417,7 +446,9 @@ Instead of hardcoding SSH keys inside the Kickstart file, it's better practice t
     echo "ssh-rsa AAAA... test-user-key-comment" | sudo tee /var/www/html/ks/authorized_keys_test
     ```
 
-# Create a Directory for Snippets `/var/www/html/ks/snippets`:
+# Kickstart Automated Installation Configuration
+
+## 1. Create a Directory for Snippets `/var/www/html/ks/snippets`:
 1.  Create the directory to hold snippet files.
 ```bash
 sudo mkdir -p /var/www/html/ks/snippets
@@ -430,14 +461,13 @@ sudo tee /var/www/html/ks/snippets/packages-base.ks > /dev/null <<'EOF'
 @^minimal-environment
 @"Development Tools"
 vim-enhanced
-epel-release
 wget
 curl
 git
 bash-completion
 policycoreutils-python-utils
 lldpad
-my-custom-tool
+my-custom-tool # <-- Add your custom package name here
 EOF
 
 # Snippet for web server packages
@@ -530,214 +560,273 @@ echo "Database server configuration complete."
 EOF
 ```
 
+## 2. Create a Directory for Snippets `/var/www/html/ks/snippets`:
+
 Create `/var/www/html/ks/centos9-ks.cfg`:
 
-
 ```kickstart
+#
+# --- CentOS Stream 9 Automated Kickstart File (Self-Contained) ---
+# This version is designed to be a single, robust file without relying on
+# external snippets fetched via HTTP during installation.
+#
+
 lang en_US.UTF-8
-
 keyboard us
-
 timezone Asia/Shanghai --utc
-
+ 
 # WARNING: Using a plaintext password is not recommended for production environments.
 rootpw --plaintext 11
-
-# Create a standard test user account.
-user --name=test --password=test --plaintext --homedir=/test
-
-# Create a third user with a home directory on a separate partition.
-# The --homedir flag is crucial here.
-user --name=appuser --password=11 --plaintext --homedir=/apphome
-
+ 
+# Create user accounts. The /apphome directory will be created by the partitioning logic.
+# Create the 'test' user and add them to the 'wheel' group for sudo privileges.
+user --name=test --password=11 --plaintext --groups=wheel
+ 
 # Use the modern authselect command instead of the deprecated auth/authconfig.
 authselect select minimal with-mkhomedir --force
-
+ 
 text
-
 firstboot --disabled
-
+ 
 # The installation source is defined by the 'inst.repo' kernel parameter in the PXE/GRUB menu.
-# The installer automatically enables the BaseOS repository from the installation media.
-# When using the 'repo' command, you must define a repository that provides the BaseOS group.
-# The 'inst.repo' URL passed on the kernel command line serves this purpose.
-# We add it here explicitly. This is the main installation source.
-repo --name="install" --baseurl=http://192.168.1.2/centos/9-stream/install
-
-# The AppStream repository is on the same media, but must be enabled separately.
-repo --name="AppStream" --baseurl=http://192.168.1.2/centos/9-stream/install/AppStream
-
-# Add our new custom local repository (if you create one).
-# The IP address should match your PXE server. Use HTTP.
-repo --name="custom" --baseurl=http://192.168.1.2/centos/9-stream/custom/x86_64/
+# We explicitly define the repos here to ensure AppStream is used for packages like "Development Tools".
+repo --name="BaseOS" --baseurl=http://192.168.1.2/centos/9-stream/install/BaseOS/
+repo --name="AppStream" --baseurl=http://192.168.1.2/centos/9-stream/install/AppStream/
+%include /tmp/repo-include
 
 services --enabled="sshd,chronyd,NetworkManager"
-
-# Remove --boot-drive to let the installer automatically select the first disk.
-bootloader --location=mbr
-
-clearpart --all --initlabel
-
-# Dynamic partitioning based on boot mode (BIOS vs UEFI)
-# The partitioning scheme is written to /tmp/part-include by the %pre script.
-%include /tmp/part-include
-
+ 
 network --bootproto=dhcp --device=link --onboot=on --ipv6=auto
-
 firewall --enabled --service=ssh --service=dhcpv6-client
-
 selinux --enforcing
-
 reboot --eject
 
+# Include the partitioning configuration generated by the %pre script.
+%include /tmp/partitioning.ks
+ 
 %packages
-# Install the "Development Tools" group. The @ symbol signifies a group,
-# and quotes are needed because the name contains a space.
-@"Development Tools"
-%include http://192.168.1.2/ks/snippets/packages-base.ks
+# Use the "Server" environment as a base instead of "Minimal Install".
+@server
+# Add essential tools that are useful for any server role.
+vim-enhanced
+wget
+curl
+git
+bash-completion
+policycoreutils-python-utils
+# Keep lldpad for Link Layer Discovery Protocol support.
+lldpad
+# The full "Development Tools" group is large. Install a smaller, more targeted set.
+@development
+# Add additional software groups based on the provided selection.
+@debugging
+@ftp-server # Corrected from @ftp
+@hardware-support
+@infiniband
+@network-file-system-client # Corrected from @nfs-client
+@network-server # Corrected from @network-server-environment
+@performance
+@remote-desktop-clients # Corrected from @remote-management
+@virtualization-hypervisor
+@web-server
+# @legacy-unix-compatibility # Temporarily disabled due to repo metadata issues.
+@console-internet
+@container-management
+@dotnet
+@headless-management
+@rpm-development-tools
+@scientific
+@security-tools
+@system-tools
 
-# The %pre script will write the role-specific package file to /tmp/packages-role.ks
-%include /tmp/packages-role.ks
+# Role-specific packages are added dynamically via a script block
+%include /tmp/packages.ks
 %end
-
+ 
 %pre
 #!/bin/bash
-# This section runs before the installation starts.
-# We detect the server role from kernel arguments and the boot mode (UEFI/BIOS)
-# to create the appropriate partitioning scheme.
+# This script runs in the installer environment before partitioning.
 
-# --- Detect Server Role ---
-# We parse /proc/cmdline to find the 'inst.ks.role' parameter.
-# If it's not found, we default to 'generic'.
+# --- Find PXE Server IP from Kernel Arguments ---
+REPO_URL=$(grep -o 'inst.repo=[^ ]*' /proc/cmdline | cut -d'=' -f2)
+SERVER_IP=$(echo "$REPO_URL" | awk -F/ '{print $3}' | sed -e 's/\[//' -e 's/\]//')
+HTTP_BASE="http://${SERVER_IP}"
+ 
+# --- Debugging Output ---
+echo "--- KICKSTART PRE-SCRIPT DEBUG ---" > /dev/tty1
+echo "Detected SERVER_IP: ${SERVER_IP}" > /dev/tty1
+
+# --- Detect Server Role from Kernel Arguments ---
 ROLE=$(grep -o 'inst.ks.role=[^ ]*' /proc/cmdline | cut -d'=' -f2)
 if [ -z "$ROLE" ]; then
     ROLE="generic"
 fi
 
-# --- Generate Role-Specific Package Snippet ---
-# Based on the role, we create a small file that includes the correct package snippet.
-# This allows us to use %include in the %packages section.
+echo "Detected ROLE: ${ROLE}" > /dev/tty1
+
+# --- Generate Repository Configuration ---
+# The installer automatically uses BaseOS and AppStream from the 'inst.repo' boot parameter.
+# We ONLY need to add our custom repositories here.
+cat > /tmp/repo-include <<EOF
+repo --name="custom" --baseurl=${HTTP_BASE}/centos/9-stream/custom/x86_64/
+EOF
+ 
+# --- Generate Dynamic Package List ---
+echo "Generating package list for role: ${ROLE}" > /dev/tty1
+cat > /tmp/packages.ks <<PACKAGES_EOF
+# This file is generated by the %pre script
+
+PACKAGES_EOF
+
 case "$ROLE" in
     web)
-        echo "%include http://192.168.1.2/ks/snippets/packages-web.ks" > /tmp/packages-role.ks
+        echo "httpd" >> /tmp/packages.ks
         ;;
     db)
-        echo "%include http://192.168.1.2/ks/snippets/packages-db.ks" > /tmp/packages-role.ks
-        ;;
-    *)
-        # Create an empty file for the generic role
-        touch /tmp/packages-role.ks
+        echo "mariadb-server" >> /tmp/packages.ks
         ;;
 esac
+# --- Generate Dynamic Partitioning and Bootloader Scheme ---
+echo "Generating partitioning and bootloader configuration..." > /dev/tty1
 
-# --- Detect Boot Mode ---
-BOOT_PART=""
-if [ -d /sys/firmware/efi ]; then
-    # UEFI system detected
-    BOOT_PART="part /boot/efi --fstype=\"efi\" --size=200"
-else
-    # BIOS system detected
-    BOOT_PART="" # No separate EFI partition for BIOS
-fi
+# --- Dynamically Detect First Disk ---
+# Find the first block device of type 'disk', excluding non-installable devices like zram.
+FIRST_DISK=$(lsblk -d -n -o NAME,TYPE | grep -E 'disk' | grep -v 'zram' | head -n 1 | awk '{print $1}')
+echo "Detected first disk for installation: ${FIRST_DISK}" > /dev/tty1
 
-# --- Generate Partitioning Scheme based on Role ---
-# The partitioning scheme is written to /tmp/part-include.
-cat > /tmp/part-include <<PART_EOF
-# Partitioning for role: ${ROLE}
-# Boot mode: $([ -n "$BOOT_PART" ] && echo "UEFI" || echo "BIOS")
-
-$BOOT_PART
-part /boot --fstype="xfs" --size=1024
-part pv.01 --size=1 --grow
-volgroup vg_main pv.01
-
+# Start with clearing all partitions and setting the bootloader location.
+cat > /tmp/partitioning.ks <<PART_EOF
+clearpart --all --initlabel
+# Use the dynamically detected disk to prevent interactive prompts.
+ignoredisk --only-use=${FIRST_DISK}
+bootloader --location=mbr
 PART_EOF
 
+if [ -d /sys/firmware/efi ]; then
+    # UEFI system detected
+    echo "Boot Mode: UEFI" > /dev/tty1
+    # Add the EFI boot partition, specifying the disk.
+    echo "part /boot/efi --fstype=\"efi\" --size=200 --ondisk=${FIRST_DISK}" >> /tmp/partitioning.ks
+ else
+    # BIOS system detected
+    echo "Boot Mode: BIOS" > /dev/tty1
+fi
+
+# Base partitioning scheme for all roles
+cat >> /tmp/partitioning.ks <<PART_EOF
+# Partitioning for role: ${ROLE}
+
+part /boot --fstype="xfs" --size=1024 --ondisk=${FIRST_DISK}
+part pv.01 --size=1 --grow --ondisk=${FIRST_DISK}
+volgroup vg_main pv.01
+PART_EOF
+ 
+# Append role-specific logical volumes
 case "$ROLE" in
-    web)
+     web)
         # Web Server: Larger /var/www for web content and bigger /var/log.
-        cat >> /tmp/part-include <<PART_EOF
+        cat >> /tmp/partitioning.ks <<PART_EOF
 logvol swap --vgname=vg_main --size=4096 --name=lv_swap
-logvol / --vgname=vg_main --size=20480 --name=lv_root --fstype="xfs"
-logvol /home --vgname=vg_main --size=5120 --name=lv_home --fstype="xfs"
+logvol / --vgname=vg_main --size=20480 --name=lv_root --fstype="xfs" --label=root
 logvol /apphome --vgname=vg_main --size=5120 --name=lv_apphome --fstype="xfs"
 logvol /var/log --vgname=vg_main --size=10240 --name=lv_log --fstype="xfs"
 logvol /var/www --vgname=vg_main --size=20480 --grow --name=lv_www --fstype="xfs"
 PART_EOF
         ;;
-
-    db)
+     db)
         # Database Server: Huge partition for data, more swap.
-        cat >> /tmp/part-include <<PART_EOF
+        cat >> /tmp/partitioning.ks <<PART_EOF
 logvol swap --vgname=vg_main --size=8192 --name=lv_swap
-logvol / --vgname=vg_main --size=20480 --name=lv_root --fstype="xfs"
-logvol /home --vgname=vg_main --size=2048 --name=lv_home --fstype="xfs"
+logvol / --vgname=vg_main --size=20480 --name=lv_root --fstype="xfs" --label=root
 logvol /apphome --vgname=vg_main --size=2048 --name=lv_apphome --fstype="xfs"
 logvol /var/lib/mysql --vgname=vg_main --size=51200 --grow --name=lv_mysql --fstype="xfs"
 PART_EOF
         ;;
-
-    *)
+     *)
         # Generic/Default Server
-        cat >> /tmp/part-include <<PART_EOF
+        cat >> /tmp/partitioning.ks <<PART_EOF
 logvol swap --vgname=vg_main --size=4096 --name=lv_swap
-logvol / --vgname=vg_main --size=20480 --name=lv_root --fstype="xfs"
-logvol /home --vgname=vg_main --size=10240 --grow --name=lv_home --fstype="xfs"
+logvol / --vgname=vg_main --size=20480 --name=lv_root --fstype="xfs" --label=root
 logvol /apphome --vgname=vg_main --size=5120 --name=lv_apphome --fstype="xfs"
+logvol /home --vgname=vg_main --size=10240 --grow --name=lv_home --fstype="xfs"
 PART_EOF
         ;;
 esac
 %end
-
-%post
---nochroot
-# This section runs in the installer environment before the system is rebooted.
-%end
-
+ 
 %post --log=/root/ks-post.log
 #!/bin/bash
-# This section runs within the chroot of the newly installed system.
+# This script runs in the chroot of the newly installed system before reboot.
 
-echo "--- Starting Kickstart Post-Installation Script ---"
+echo "--- KICKSTART POST-INSTALL SCRIPT ---"
 
-# --- Dynamically find the PXE server IP ---
-# Include the base post-install script from the web server
-%include http://192.168.1.2/ks/snippets/post-base-setup.ks
+# --- Find PXE Server IP and Role from Kernel Arguments ---
+REPO_URL=$(grep -o 'inst.repo=[^ ]*' /proc/cmdline | cut -d'=' -f2)
+SERVER_IP=$(echo "$REPO_URL" | awk -F/ '{print $3}' | sed -e 's/\[//' -e 's/\]//')
 
-# --- Role-Specific Configuration ---
-# The %pre script has already detected the role. We re-detect it here for the %post environment.
 ROLE=$(grep -o 'inst.ks.role=[^ ]*' /proc/cmdline | cut -d'=' -f2)
-if [ -z "$ROLE" ]; then
-    ROLE="generic"
-fi
+[ -z "$ROLE" ] && ROLE="generic"
 
-echo "Detected server role: ${ROLE}"
+echo "Detected PXE Server IP: ${SERVER_IP}"
+echo "Detected Server Role: ${ROLE}"
 
+# --- User SSH Key Setup ---
+echo "Configuring SSH keys for users..."
+# Root
+install -d -m 700 -o root -g root /root/.ssh
+curl -s -o /root/.ssh/authorized_keys "http://${SERVER_IP}/ks/authorized_keys_root"
+chmod 600 /root/.ssh/authorized_keys
+chown root:root /root/.ssh/authorized_keys
+# Test
+install -d -m 700 -o test -g test /home/test
+install -d -m 700 -o test -g test /home/test/.ssh
+curl -s -o /home/test/.ssh/authorized_keys "http://${SERVER_IP}/ks/authorized_keys_test" && \
+    chmod 600 /home/test/.ssh/authorized_keys && chown test:test /home/test/.ssh/authorized_keys
+# Appuser
+install -d -m 700 -o appuser -g appuser /apphome/.ssh
+curl -s -o /apphome/.ssh/authorized_keys "http://${SERVER_IP}/ks/authorized_keys_appuser"
+chmod 600 /apphome/.ssh/authorized_keys
+chown appuser:appuser /apphome/.ssh/authorized_keys
+
+# --- System Configuration ---
+echo "Setting system hostname..."
+IP_ADDR=$(hostname -I | awk '{print $1}' | tr '.' '-')
+hostnamectl set-hostname "host-${IP_ADDR}"
+
+# --- Role-Specific Post-Install Tasks ---
 case "$ROLE" in
-    web)
-        %include http://192.168.1.2/ks/snippets/post-role-web.ks
+     web)
+        echo "Configuring as a web server..."
+        systemctl enable httpd
+        echo "<h1>Web Server - Deployed via PXE</h1>" > /var/www/html/index.html
+        firewall-cmd --add-service=http --permanent
         ;;
-    db)
-        %include http://192.168.1.2/ks/snippets/post-role-db.ks
+     db)
+        echo "Configuring as a database server..."
+        systemctl enable mariadb
+        firewall-cmd --add-service=mysql --permanent
         ;;
-    *)
+     *)
         echo "No specific role configuration for 'generic' server."
         ;;
 esac
 
-# --- Security Hardening ---
-echo "Hardening SSH configuration..."
-sed -i 's/^#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
-sed -i 's/^#PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
-echo "SSH daemon configured to allow root login with password."
+# --- LLDP Configuration ---
+# Enable the LLDP agent daemon to start on boot. This makes the server discoverable on the network.
+echo "Enabling LLDP service..."
+systemctl enable lldpad
 
-# --- Final System Update ---
+echo "Enabling root SSH login with password..."
+# Ensure PermitRootLogin is set to 'yes' to allow root login.
+sed -i 's/.*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+ 
 echo "Performing final system update. This may take a few minutes..."
-dnf -y update
-
+# Install epel-release first, then update all packages.
+#dnf -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm && dnf -y update
+ 
 firewall-cmd --reload
-
-echo "--- Kickstart Post-Installation Script Finished ---"
+ 
+echo "--- KICKSTART POST-INSTALL SCRIPT FINISHED ---"
 %end
 ```
 
@@ -772,13 +861,10 @@ sudo ufw allow ssh        # SSH for remote management
 sudo ufw enable
 ```
 
-
-### 验证服务
-
+### Verify Services
 
 ```bash
-检查服务状态
-
+# Check the status of each service to ensure they are running without errors.
 sudo systemctl status isc-dhcp-server
 sudo systemctl status isc-dhcp-server6
 sudo systemctl status tftpd-hpa
@@ -786,168 +872,41 @@ sudo systemctl status apache2
 curl -g -I http://[fd00:1234:5678:1::10]/ks/centos9-ks.cfg
 ```
 
-
-## 客户端安装测试
-
-### 安装流程
-1. 客户端设置为网络启动(PXE)
-2. 获取DHCP IP地址
-3. 下载PXE引导文件
-4. 显示启动菜单
-5. 自动执行Kickstart安装
-6. 安装完成自动重启
-
-### 验证清单
-- [ ] 客户端能获取IP地址
-- [ ] 显示PXE启动菜单
-- [ ] 自动开始安装过程
-- [ ] 无需人工干预完成安装
-- [ ] 系统重启后正常启动
-- [ ] 网络配置正确
-- [ ] 用户账户可正常登录
-
-### First SSH Connection
-
-After the installation is complete and the client has rebooted, you can connect to it via SSH. The Kickstart script configured the root user for key-based authentication.
-
-1.  Find the client's IP address from your DHCP server's logs or by checking your router's client list.
-2.  Connect using `ssh root@<client-ip-address>`.
-
-On your first connection, you will see a message about the host's authenticity, which is normal.
-
-```
-The authenticity of host '192.168.1.165 (192.168.1.165)' can't be established.
-ED25519 key fingerprint is SHA256:SPojjIMewEgwLMXtsuhjh+vi+RHuKwFgxBogFd8hNto.
-Are you sure you want to continue connecting (yes/no/[fingerprint])?
-```
-
-Type `yes` and press Enter. This saves the new server's public key to your `known_hosts` file and allows the connection to proceed. If your SSH key was correctly placed in the `/var/www/html/ks/authorized_keys` file on the PXE server, you will be logged in without a password.
-
-
-## 故障排查指南
-
-### 常见问题及解决方案
-
-| 问题现象 | 可能原因 | 解决方案 |
-|---------|----------|----------|
-| 客户端无法获取IP | DHCP服务未运行或防火墙阻挡 | 检查isc-dhcp-server/isc-dhcp-server6状态和ufw规则 |
-| 获取IP后无法启动 | TFTP服务未运行或文件路径错误 | 检查tftpd-hpa状态和/var/lib/tftpboot内容 |
-| 启动后找不到Kickstart文件 | HTTP服务问题 | 检查apache2状态和/var/www/html/ks/内容 |
-| Kickstart安装失败 | 语法错误 | 验证Kickstart文件语法 |
-
-### 诊断命令
-
-
-```bash
-查看服务状态
-
-systemctl status isc-dhcp-server
-systemctl status isc-dhcp-server6
-
-systemctl status tftpd-hpa
-
-systemctl status apache2
-
-查看日志
-
-journalctl -u isc-dhcp-server -f
-journalctl -u isc-dhcp-server6 -f
-
-journalctl -u tftpd-hpa -f
-
-tail -f /var/log/apache2/access.log
-
-网络测试
-
-curl -g http://[fd00:1234:5678:1::10]/ks/centos9-ks.cfg
-```
-
-
-## 附录
-
-### 安全建议
-1. 生产环境中使用加密密码
-2. 配置防火墙限制访问
-3. 定期更新系统补丁
-4. 监控服务运行状态
-
-### 性能优化建议
-1. 使用本地镜像源提高下载速度
-2. 配置合适的DHCP租约时间
-3. 优化Kickstart安装包选择
-4. 使用高速存储存放安装文件
-
-### 扩展功能
-1. 支持多版本操作系统安装
-2. 添加硬件检测功能
-3. 实现安装进度监控
-4. 集成系统配置管理
-
----
-
-**文档结束**
-
-
-保存方法
-
-您可以选择以下任一方式保存此文件：
-
-方法1：直接复制保存
-
-1. 复制上面的全部内容
-
-2. 打开文本编辑器（如VS Code、Notepad++、Sublime Text等）
-
-3. 粘贴内容
-
-4. 保存为 centos9-pxe-setup-guide.md
-
-方法2：使用命令行保存（Linux/Mac）
-
-# 将内容保存到文件
-```bash
-cat > centos9-pxe-setup-guide.md << 'EOF'
-[在此处粘贴上面的全部内容]
-EOF
-```
-
-
-方法3：在服务器上直接创建
-
-如果您想在服务器上直接创建这个文件：
-
-```bash
-# 连接到您的服务器
-ssh username@server-ip
-
-# 创建并编辑文件
-vim centos9-pxe-setup-guide.md
-```
-
-# 按 i 进入插入模式，粘贴内容，然后按 ESC，输入 :wq 保存退出
-
-
-转换为PDF
-
-保存为Markdown文件后，您可以使用以下方法转换为PDF：
-
-使用Pandoc（推荐）
-
-```bash
-pandoc centos9-pxe-setup-guide.md -o centos9-pxe-setup-guide.pdf
-```
-
-
-使用VS Code
-
-1. 安装"Markdown PDF"扩展
-
-2. 右键Markdown文件选择"Markdown PDF: Export (pdf)"
-
-在线转换工具
-
-• 访问 markdown-pdf.com
-
-• 或使用其他在线Markdown转PDF服务
-
-这个文档包含了完整的配置指南，可以直接用于实际部署。
+## Client Installation Test
+1.  Configure the client machine to boot from the network (PXE boot). This is usually done in the BIOS/UEFI settings.
+2.  Power on the client machine and observe the PXE boot process.
+3.  Select the "Automated CentOS Stream 9 Installation" option from the PXE boot menu.
+4.  The installation should proceed automatically using the Kickstart configuration.
+5.  After installation, verify that the system is configured as expected (users created, hostname set, services enabled, etc.).
+## Troubleshooting Guide
+- **DHCP Issues**: Ensure the DHCP server is running and correctly configured. Check logs in `/var/log/syslog` for DHCP-related messages.
+- **TFTP Issues**: Verify that the TFTP server is running and that the necessary files are in the correct directory. Check `/var/log/syslog` for TFTP errors.
+- **HTTP Issues**: Ensure the Apache server is running and that the installation files are accessible via HTTP. Use `curl` to test access to the Kickstart file and installation media.
+- **Client Boot Issues**: Ensure the client is set to boot from the network and that it supports PXE booting. Check the client BIOS/UEFI settings.
+- **Kickstart Issues**: Review the Kickstart log files on the client machine, typically found in `/var/log/anaconda/` for errors during installation.
+## Appendix
+- **Useful Commands**:
+  - Restart services: `sudo systemctl restart <service-name>`
+  - Check service status: `sudo systemctl status <service-name>`
+  - View logs: `tail -f /var/log/syslog` or specific log files.
+- **References**:
+  - [ISC DHCP Server Documentation](https://kb.isc.org/docs/isc-dhcp-44-manual-pages)
+  - [TFTPD-HPA Documentation](http://manpages.ubuntu.com/manpages/bionic/man5/tftpd-hpa.conf.5.html)
+  - [Apache HTTP Server Documentation](https://httpd.apache.org/docs/)
+    - [CentOS Stream 9 Installation Guide](https://docs.centos.org/en-US/centos/install-guide/)
+    - [Kickstart Documentation](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/performing_a_standard_rhel_installation/assembly_kickstart-installations_performing-a-standard-rhel-installation)
+- **Log Locations**:
+  - DHCP Server: `/var/log/syslog`
+  - TFTP Server: `/var/log/syslog`
+  - Apache Server: `/var/log/httpd/` or `/var/log/apache2/` depending on your distribution
+  - Kickstart Logs: `/var/log/anaconda/`
+- **Security Considerations**:
+  - Ensure that the PXE server is on a secure network segment to prevent unauthorized access.
+    - Use secure passwords and consider using SSH keys for remote access.
+    - Regularly update the server software to patch vulnerabilities.
+- **Backup Configurations**:
+  - Regularly back up configuration files for DHCP, TFTP, and Apache to prevent data loss.
+- **Maintenance Tips**:
+  - Periodically check for updates to CentOS Stream 9 and apply them as needed.
+- Monitor disk space on the PXE server to ensure there is enough space for installation files and logs.
+- Test the PXE boot process periodically to ensure it continues to function correctly after updates or changes to the network environment.
