@@ -5,6 +5,7 @@ import logging
 import re
 import sys
 import ipaddress
+import os
 from datetime import datetime
 import subprocess
 
@@ -538,6 +539,11 @@ def main():
         parser_test = subparsers.add_parser('test-server', help="Test DHCP server responsiveness by sending a DISCOVER packet.")
         def handle_test_server(args, dhcp):
             """Handler for the 'test-server' command."""
+            # The 'test-server' command requires root privileges to create raw sockets.
+            if os.geteuid() != 0:
+                logging.error("Permission denied. The 'test-server' command must be run with root privileges.")
+                logging.error("Please try again using 'sudo dhcptool.py test-server'.")
+                sys.exit(1)
             # Double-check that scapy is properly loaded before running
             if not hasattr(BOOTP, 'fields_desc'):
                 logging.error("Cannot run test: 'scapy' library is not installed. Please run 'pip install scapy'.")
