@@ -7,6 +7,7 @@ import sys
 import ipaddress
 import os
 from datetime import datetime
+import json
 import subprocess
 
 try:
@@ -21,43 +22,51 @@ class DhcpAdmin:
     """
     A Python class to manage ISC-DHCPd leases and static hosts.
     """
-    def __init__(self, lease_file='/var/lib/dhcp/dhcpd.leases', lease_file_v6='/var/lib/dhcp/dhcpd6.leases', dhcp_service_name='isc-dhcp-server'):
+    def __init__(self, lease_file='/var/lib/dhcp/dhcpd.leases', lease_file_v6='/var/lib/dhcp/dhcpd6.leases', dhcp_service_name='isc-dhcp-server', config_file='/etc/dhcp/dhcpd.conf', config_file_v6='/etc/dhcp/dhcpd6.conf'):
         self.lease_file = lease_file
         self.lease_file_v6 = lease_file_v6
+        # Add config file paths to the class
+        self.config_file = config_file
+        self.config_file_v6 = config_file_v6
         self.dhcp_service_name = dhcp_service_name
         self.logger = logging.getLogger(__name__)
-        self.leases = self._parse_leases()
-        self.leases_v6 = self._parse_leases_v6()
+        self.leases_ipv4 = self._parse_ipv4_leases()
+        self.leases_ipv6 = self._parse_ipv6_leases()
+        self.duplicate_macs = self._find_duplicate_macs()
 
-    def _parse_leases(self):
-        """Parses the dhcpd.leases file and returns a list of lease dicts."""
-        leases = {}
+    def _read_lease_file(self, file_path):
+        """Reads a lease file and returns its content, handling common errors."""
         try:
-            with open(self.lease_file, 'r') as f:
-                content = f.read()
+            with open(file_path, 'r') as f:
+                return f.read()
         except FileNotFoundError:
-            self.logger.warning("Lease file not found at %s.", self.lease_file)
-            return {}
+            self.logger.info("Lease file not found at %s. This may be normal if the protocol is not in use.", file_path)
+            return None
         except PermissionError:
-            self.logger.error("Permission denied to read lease file at %s. Try running with sudo.", self.lease_file)
+            self.logger.error("Permission denied to read lease file at %s. Try running with sudo.", file_path)
+            return None
+
+    def _parse_ipv4_leases(self):
+        """Parses the dhcpd.leases file and returns a dictionary of active IPv4 leases."""
+        leases = {}
+        content = self._read_lease_file(self.lease_file)
+        if not content:
             return {}
 
         # A simplified regex to find lease blocks
         lease_blocks = re.findall(r'lease\s+([\d\.]+)\s+\{([^}]+)\}', content, re.DOTALL)
         
         for ip, block in lease_blocks:
-            mac_match = re.search(r'hardware ethernet ([\w:]+);', block)
-            hostname_match = re.search(r'client-hostname "([^"]+)";', block)
-            ends_match = re.search(r'ends \d+ (.*?);', block)
-            
             # The most reliable way to check for an active lease is the binding state.
             binding_state_match = re.search(r'binding state (\w+);', block)
             if not binding_state_match or binding_state_match.group(1) != 'active':
                 continue
 
+            mac_match = re.search(r'hardware ethernet ([\w:]+);', block)
             if mac_match:
                 mac = mac_match.group(1)
                 lease_end = None
+                ends_match = re.search(r'ends \d+ (.*?);', block)
                 if ends_match:
                     end_time_str = ends_match.group(1)
                     # Try parsing multiple common date formats from dhcpd.leases
@@ -85,6 +94,7 @@ class DhcpAdmin:
                         elif part.startswith('serial='):
                             serial = part.split('=', 1)[1]
 
+                hostname_match = re.search(r'client-hostname "([^"]+)";', block)
                 leases[ip] = {
                     'ip': ip,
                     'mac': mac,
@@ -92,22 +102,16 @@ class DhcpAdmin:
                     'ends': lease_end,
                     'model': model,
                     'serial': serial,
-                    'vendor_hostname': vendor_hostname
+                    'vendor_hostname': vendor_hostname,
+                    'version': 4
                 }
         return leases
 
-    def _parse_leases_v6(self):
-        """Parses the dhcpd6.leases file and returns a list of lease dicts."""
+    def _parse_ipv6_leases(self):
+        """Parses the dhcpd6.leases file and returns a dictionary of active IPv6 leases."""
         leases = {}
-        try:
-            with open(self.lease_file_v6, 'r') as f:
-                content = f.read()
-        except FileNotFoundError:
-            # This is not a warning because the file may not exist if IPv6 is not used.
-            self.logger.info("IPv6 lease file not found at %s. Skipping IPv6 lease parsing.", self.lease_file_v6)
-            return {}
-        except PermissionError:
-            self.logger.error("Permission denied to read IPv6 lease file at %s. Try running with sudo.", self.lease_file_v6)
+        content = self._read_lease_file(self.lease_file_v6)
+        if not content:
             return {}
 
         # Regex to find ia-na blocks, which contain address assignments
@@ -149,20 +153,42 @@ class DhcpAdmin:
                     'ends': lease_end,
                     'model': None,
                     'serial': None,
-                    'vendor_hostname': None
+                    'vendor_hostname': None,
+                    'version': 6
                 }
         return leases
 
+    def get_all_leases(self):
+        """Returns a unified list of all active IPv4 and IPv6 leases."""
+        all_leases = list(self.leases_ipv4.values())
+        all_leases.extend(list(self.leases_ipv6.values()))
+        return all_leases
+
+    def _find_duplicate_macs(self):
+        """
+        Finds MAC addresses that have been assigned multiple IP addresses across all leases.
+        This is executed once during initialization.
+        Returns a dictionary of MACs mapped to their list of IPs if duplicates are found.
+        """
+        mac_to_ips = {}
+        for lease in self.get_all_leases():
+            mac = lease.get('mac')
+            ip = lease.get('ip')
+            if mac and ip:
+                mac_to_ips.setdefault(mac, []).append(ip)
+
+        return {mac: ips for mac, ips in mac_to_ips.items() if len(ips) > 1}
+
     def get_lease_by_hostname(self, hostname):
         """Finds an active lease by its hostname."""
-        for lease in self.leases.values():
+        for lease in self.leases_ipv4.values():
             if lease.get('hostname') == hostname:
                 return lease
         return None
 
     def get_lease_by_ip(self, ip):
         """Finds an active lease by its IP address."""
-        return self.leases.get(ip)
+        return self.leases_ipv4.get(ip) or self.leases_ipv6.get(ip)
 
     def reload_dhcp_service(self):
         """Reloads the DHCP service to apply changes."""
@@ -270,7 +296,8 @@ def setup_logging():
 def handle_list(args, dhcp):
     """Handler for the 'list' sub-command."""
     print("--- Active Dynamic Leases ---")
-    if not dhcp.leases and not dhcp.leases_v6:
+    all_leases = dhcp.get_all_leases()
+    if not all_leases:
         print("No active leases found.")
         # Add a helpful diagnostic check if no leases are found.
         status = dhcp.get_dhcp_service_status()
@@ -284,15 +311,25 @@ def handle_list(args, dhcp):
             logging.info("Or test server responsiveness with: 'sudo dhcptool.py test-server'")
         return
     
-    print(f"  {'Hostname':<25} {'IP Address':<15} {'MAC Address':<17}   {'Model':<12} {'Serial Number':<18} {'Expires'}")
-    print(f"  {'-'*25} {'-'*15} {'-'*17}   {'-'*12} {'-'*18} {'-'*19}")
+    # Unified header for both IPv4 and IPv6
+    print(f"  {'Hostname':<25} {'IP Address':<40} {'MAC Address':<17}   {'Model':<12} {'Serial Number':<18} {'Expires'}")
+    print(f"  {'-'*25} {'-'*40} {'-'*17}   {'-'*12} {'-'*18} {'-'*19}")
 
-    leases_list = list(dhcp.leases.values())
+    leases_list = all_leases
+
+    # --- New: Filter for duplicates only ---
+    if args.duplicates_only:
+        if not dhcp.duplicate_macs:
+            print("No duplicate MAC addresses found.")
+            return
+        
+        leases_list = [lease for lease in leases_list if lease.get('mac') in dhcp.duplicate_macs]
+        print(f"--- Showing {len(leases_list)} lease(s) for {len(dhcp.duplicate_macs)} duplicate MAC address(es) ---")
 
     # Filter the list of leases based on the provided filter terms.
     if args.filter_terms:
         filtered_leases = []
-        for lease in leases_list:
+        for lease in all_leases:
             matches_all = True
             for term in args.filter_terms:
                 processed_term = term if args.case_sensitive else term.lower()
@@ -301,6 +338,7 @@ def handle_list(args, dhcp):
                 lease_ip = lease.get('ip') or ""
                 lease_mac = lease.get('mac') or ""
                 lease_model = lease.get('model') or ""
+                lease_serial = lease.get('serial') or ""
                 lease_serial = lease.get('serial') or ""
                 
                 # Construct composite hostname
@@ -312,7 +350,7 @@ def handle_list(args, dhcp):
                     hostname = vendor_hostname or ""
 
                 # Prepare values for comparison
-                check_values = [lease_ip, lease_mac]
+                check_values = [lease_ip, lease_mac, lease_serial]
                 check_values.extend([val if args.case_sensitive else val.lower() for val in [hostname, lease_model, lease_serial]])
 
                 # If the current term is not found in any value, this lease is not a match
@@ -351,36 +389,55 @@ def handle_list(args, dhcp):
         key_func = lambda lease: (lease.get(sort_key) or "").lower()
     sorted_leases = sorted(leases_list, key=key_func, reverse=args.reverse)
     # --- End Sorting Logic ---
+
+    # --- New: JSON output logic ---
+    if args.output_json:
+        serializable_leases = []
+        for lease in sorted_leases:
+            # Create a copy to avoid modifying the original list in memory
+            lease_copy = lease.copy()
+            if lease_copy.get('ends') and isinstance(lease_copy['ends'], datetime):
+                lease_copy['ends'] = lease_copy['ends'].isoformat()
+            serializable_leases.append(lease_copy)
+        try:
+            with open(args.output_json, 'w') as f:
+                json.dump(serializable_leases, f, indent=2)
+            logging.info(f"Successfully wrote {len(serializable_leases)} leases to {args.output_json}")
+        except (IOError, PermissionError) as e:
+            logging.error(f"Failed to write to JSON file {args.output_json}: {e}")
+        return # Exit after writing to file
+
     # Print the sorted and filtered lease information.
     for lease in sorted_leases:
-        client_hostname = lease.get('hostname')
-        vendor_hostname = lease.get('vendor_hostname')
-
-        # Create an improved composite hostname string
-        if client_hostname:
-            if vendor_hostname and client_hostname != vendor_hostname:
-                hostname = f"{client_hostname} ({vendor_hostname})"
+        if lease.get('version') == 4:
+            client_hostname = lease.get('hostname')
+            vendor_hostname = lease.get('vendor_hostname')
+            if client_hostname:
+                if vendor_hostname and client_hostname != vendor_hostname:
+                    hostname = f"{client_hostname} ({vendor_hostname})"
+                else:
+                    hostname = client_hostname
             else:
-                hostname = client_hostname
-        else: # No client_hostname provided
-            hostname = vendor_hostname or "<no-hostname>"
-
-        expires_str = lease['ends'].strftime('%Y-%m-%d %H:%M:%S') if lease.get('ends') else "N/A"
-        model = lease.get('model') or "N/A"
-        serial = lease.get('serial') or "N/A"
-
-        print(f"  {hostname:<25} {lease['ip']:<15} {lease['mac']:<17}   {model:<12} {serial:<18} {expires_str}")
-    
-    if dhcp.leases_v6:
-        print("\n--- Active Dynamic Leases (IPv6) ---")
-        print(f"  {'IP Address':<40} {'MAC Address':<17}   {'Expires'}")
-        print(f"  {'-'*40} {'-'*17}   {'-'*19}")
-
-        sorted_leases_v6 = sorted(dhcp.leases_v6.values(), key=lambda l: ipaddress.ip_address(l.get('ip', '::')))
-        for lease in sorted_leases_v6:
-            expires_str = lease['ends'].strftime('%Y-%m-%d %H:%M:%S') if lease.get('ends') else "N/A"
+                hostname = vendor_hostname or "<no-hostname>"
+            model = lease.get('model') or "N/A"
+            serial = lease.get('serial') or "N/A"
+            mac = lease.get('mac') or "N/A"
+        else: # IPv6
+            hostname = "<no-hostname>"
+            model = "N/A"
+            serial = "N/A"
             mac = lease.get('mac') or "N/A (not DUID-LLT)"
-            print(f"  {lease['ip']:<40} {mac:<17}   {expires_str}")
+
+        expires_str = lease.get('ends').strftime('%Y-%m-%d %H:%M:%S') if lease.get('ends') else "N/A"
+        print(f"  {hostname:<25} {lease['ip']:<40} {mac:<17}   {model:<12} {serial:<18} {expires_str}")
+
+    # --- New: Check for and warn about duplicate MACs ---
+    if dhcp.duplicate_macs:
+        print("\n" + "="*80)
+        logging.warning("Duplicate MAC addresses found with multiple IPs!")
+        print("--- WARNING: Duplicate MAC Addresses Detected ---")
+        for mac, ips in dhcp.duplicate_macs.items():
+            print(f"  MAC: {mac} has been assigned multiple IPs: {', '.join(ips)}")
 
 def handle_service(args, dhcp):
     """Handler for service management sub-commands."""
@@ -414,7 +471,7 @@ def handle_find(args, dhcp):
     term = args.search_term.lower()
     found_leases = []
 
-    for lease in dhcp.leases.values():
+    for lease in dhcp.get_all_leases():
         # Prepare values for comparison (always case-insensitive for find)
         lease_ip = lease.get('ip') or ""
         lease_mac = lease.get('mac') or ""
@@ -431,15 +488,6 @@ def handle_find(args, dhcp):
             term in vendor_hostname or
             term in lease_model or
             term in lease_serial):
-            found_leases.append(lease)
-
-    # Also search in IPv6 leases
-    for lease in dhcp.leases_v6.values():
-        lease_ip = lease.get('ip') or ""
-        lease_mac = (lease.get('mac') or "").lower()
-
-        if (term in lease_ip or
-            term in lease_mac):
             found_leases.append(lease)
 
     if len(found_leases) == 0:
@@ -479,11 +527,20 @@ def handle_find(args, dhcp):
 def handle_summary(args, dhcp):
     """Handler for the 'summary' sub-command."""
     print("--- DHCP Server Summary ---")
-    num_leases = len(dhcp.leases)
+    num_leases = len(dhcp.get_all_leases())
     status = dhcp.get_dhcp_service_status()
 
     print(f"  Active Dynamic Leases:   {num_leases}")
     print(f"  Service Status ({dhcp.dhcp_service_name}): {status}")
+
+def handle_config_path(args, dhcp):
+    """Handler for the 'config-path' sub-command."""
+    print("--- DHCP Server Configuration Paths ---")
+    print(f"  IPv4 Config File: {dhcp.config_file}")
+    if os.path.exists(dhcp.config_file_v6):
+        print(f"  IPv6 Config File: {dhcp.config_file_v6}")
+    else:
+        print(f"  IPv6 Config File: {dhcp.config_file_v6} (Not found)")
 
 def main():
     """Main function to parse arguments and dispatch to handlers."""
@@ -499,6 +556,16 @@ def main():
         default='/var/lib/dhcp/dhcpd6.leases',
         help='Path to the DHCPv6 leases file (default: /var/lib/dhcp/dhcpd6.leases)'
     )
+    parser.add_argument(
+        '--config-file',
+        default='/etc/dhcp/dhcpd.conf',
+        help='Path to the DHCPv4 configuration file (default: /etc/dhcp/dhcpd.conf)'
+    )
+    parser.add_argument(
+        '--config-file-v6',
+        default='/etc/dhcp/dhcpd6.conf',
+        help='Path to the DHCPv6 configuration file (default: /etc/dhcp/dhcpd6.conf)'
+    )
 
     subparsers = parser.add_subparsers(dest='command', required=True, help='Available commands')
 
@@ -508,6 +575,8 @@ def main():
     parser_list.add_argument('--sort-by', choices=['hostname', 'ip', 'mac', 'model', 'serial', 'expires'], default='hostname', help='Column to sort the list by.')
     parser_list.add_argument('--case-sensitive', action='store_true', help='Perform a case-sensitive filter.')
     parser_list.add_argument('--reverse', action='store_true', help='Sort in descending order.')
+    parser_list.add_argument('--duplicates-only', action='store_true', help='Only show leases for MAC addresses with multiple assigned IPs.')
+    parser_list.add_argument('--output-json', metavar='FILE', help='Output the lease list to a JSON file instead of printing to the console.')
     parser_list.set_defaults(func=handle_list)
 
     # --- Service management commands ---
@@ -557,10 +626,14 @@ def main():
         parser_test.add_argument('--timeout', type=int, default=5, help="Seconds to wait for a response (default: 5).")
         parser_test.set_defaults(func=handle_test_server)
 
+    # --- Config Path command ---
+    parser_config_path = subparsers.add_parser('config-path', help='Show the paths to the DHCP configuration files.')
+    parser_config_path.set_defaults(func=handle_config_path)
+
     args = parser.parse_args()
     
     # Initialize DhcpAdmin and call the appropriate handler function
-    dhcp = DhcpAdmin(lease_file=args.lease_file, lease_file_v6=args.lease_file_v6)
+    dhcp = DhcpAdmin(lease_file=args.lease_file, lease_file_v6=args.lease_file_v6, config_file=args.config_file, config_file_v6=args.config_file_v6)
     args.func(args, dhcp)
 
     logging.info("--- Process Complete ---")
