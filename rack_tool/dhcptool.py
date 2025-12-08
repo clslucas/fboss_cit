@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # dhcptool.py
 import argparse
 import logging
@@ -268,18 +269,26 @@ def setup_logging():
 def handle_list(args, dhcp):
     """Handler for the 'list' sub-command."""
     print("--- Active Dynamic Leases ---")
-    if not dhcp.leases:
+    if not dhcp.leases and not dhcp.leases_v6:
         print("No active leases found.")
+        # Add a helpful diagnostic check if no leases are found.
+        status = dhcp.get_dhcp_service_status()
+        if status != 'active':
+            logging.warning("The DHCP service '%s' is not active (current state: %s).", dhcp.dhcp_service_name, status)
+            logging.info("You can try starting it with: 'sudo dhcptool.py service start'")
+        else:
+            # If the service is running but there are no leases, provide next steps.
+            logging.info("The DHCP service is running but has no active leases.")
+            logging.info("You can check the server logs with: 'sudo dhcptool.py log'")
+            logging.info("Or test server responsiveness with: 'sudo dhcptool.py test-server'")
         return
     
-    # Print header
     print(f"  {'Hostname':<25} {'IP Address':<15} {'MAC Address':<17}   {'Model':<12} {'Serial Number':<18} {'Expires'}")
     print(f"  {'-'*25} {'-'*15} {'-'*17}   {'-'*12} {'-'*18} {'-'*19}")
 
-    # --- Sorting Logic ---
     leases_list = list(dhcp.leases.values())
 
-    # --- Filtering Logic ---
+    # Filter the list of leases based on the provided filter terms.
     if args.filter_terms:
         filtered_leases = []
         for lease in leases_list:
@@ -309,7 +318,7 @@ def handle_list(args, dhcp):
                 if not any(processed_term in value for value in check_values):
                     matches_all = False
                     break # Move to the next lease
-            
+            # If all terms matched for this lease, add it to the filtered list.
             if matches_all:
                 filtered_leases.append(lease)
 
@@ -317,9 +326,9 @@ def handle_list(args, dhcp):
         print(f"--- Showing {len(leases_list)} lease(s) matching: {args.filter_terms} ---")
     # --- End Filtering Logic ---
 
+    # --- Sorting Logic ---
     sort_key = args.sort_by
 
-    # Define a key function for sorting based on the chosen column
     if sort_key == 'ip':
         # Use ipaddress module for correct IP sorting
         key_func = lambda lease: ipaddress.ip_address(lease.get('ip', '0.0.0.0'))
@@ -327,7 +336,7 @@ def handle_list(args, dhcp):
         # Use datetime.min for leases without an expiration to sort them first
         key_func = lambda lease: lease.get('ends') or datetime.min
     elif sort_key == 'hostname':
-        # Sort by the final displayed hostname for consistency
+        # Sort by the final displayed hostname for consistency.
         def get_display_hostname(lease):
             client_hostname = lease.get('hostname')
             vendor_hostname = lease.get('vendor_hostname')
@@ -339,10 +348,9 @@ def handle_list(args, dhcp):
     else:
         # Default to case-insensitive string sorting for other columns
         key_func = lambda lease: (lease.get(sort_key) or "").lower()
-
     sorted_leases = sorted(leases_list, key=key_func, reverse=args.reverse)
     # --- End Sorting Logic ---
-
+    # Print the sorted and filtered lease information.
     for lease in sorted_leases:
         client_hostname = lease.get('hostname')
         vendor_hostname = lease.get('vendor_hostname')
@@ -364,7 +372,6 @@ def handle_list(args, dhcp):
     
     if dhcp.leases_v6:
         print("\n--- Active Dynamic Leases (IPv6) ---")
-        # Print header
         print(f"  {'IP Address':<40} {'MAC Address':<17}   {'Expires'}")
         print(f"  {'-'*40} {'-'*17}   {'-'*19}")
 
