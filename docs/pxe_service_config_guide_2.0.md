@@ -1,10 +1,10 @@
 # CentOS Stream 9 PXE Automated Installation on a Single Ubuntu Server
 
 ## Document Information
-- **Document Version**: 1.0
-- **Creation Date**: January 2024
+- **Document Version**: 2.0
+- **Creation Date**: December 2025
 - **Applicable Environment**: Test/Production Environment
-- **Operating System**: Ubuntu Server + CentOS Stream 9
+- **Operating System**: Ubuntu Server + CentOS Stream 9(Client)
 
 ## Table of Contents
 - [CentOS Stream 9 PXE Automated Installation on a Single Ubuntu Server](#centos-stream-9-pxe-automated-installation-on-a-single-ubuntu-server)
@@ -60,7 +60,7 @@
 ### Network Configuration
 - **IPv4 Network Segment**: 192.168.1.0/24
 - **IPv4 Gateway**: 192.168.1.1
-- **IPv4 DHCP Range**: 192.168.1.100-200
+- **IPv4 DHCP Range**: 192.168.1.20-240
 - **IPv6 Network Segment**: fd00\:1234\:5678:1::/64
 - **IPv6 DHCP Range**: fd00\:1234\:5678:1::100 - fd00\:1234\:5678:1::200
 - **DNS**: 8.8.8.8, 8.8.4.4, 2001:4860:4860::8888
