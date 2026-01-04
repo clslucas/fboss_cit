@@ -1,23 +1,172 @@
 {
-    "rmc_ip": "192.168.1.191",
-        "w400_ip": "192.168.1.206",
-        "username": "root",
-        "password": "",
-        "w400_x86_ip": "192.168.100.1",
-        "w400_x86_username": "root",
-        "w400_x86_password": "",
-        "th6_devices": [
-            {"ip": "192.168.1.191", "username": "root", "password": "11"},
-            {"ip": "192.168.1.206", "username": "root", "password": "11"},
-            {"ip": "192.168.1.123", "username": "root", "password": "11"},
-            {"ip": "192.168.1.216", "username": "root", "password": "11"},
-            {"ip": "192.168.1.221", "username": "root", "password": "11"},
-            {"ip": "192.168.1.131", "username": "root", "password": "11"},
-            {"ip": "192.168.1.190", "username": "root", "password": "11"},
-            {"ip": "192.168.1.156", "username": "root", "password": "11"},
-            {"ip": "192.168.1.215", "username": "root", "password": "11"},
-            {"ip": "192.168.1.166", "username": "root", "password": "11"},
-            {"ip": "192.168.1.232", "username": "root", "password": "11"},
-            {"ip": "192.168.1.208", "username": "root", "password": "11"}
-        ]
+    "active_profile": "rack1.5",
+    "profiles": {
+        "default": {
+            "rmc_ip": "192.168.1.103",
+            "w400_ip": "192.168.1.121",
+            "username": "root",
+            "password": "0penBmc",
+            "w400_x86_ip": "192.168.100.1",
+            "w400_x86_username": "root",
+            "w400_x86_password": "",
+            "th6_devices": [
+                {
+                    "ip": "192.168.1.191",
+                    "username": "root",
+                    "password": "11"
+                },
+                {
+                    "ip": "192.168.1.206",
+                    "username": "root",
+                    "password": "11"
+                },
+                {
+                    "ip": "192.168.1.123",
+                    "username": "root",
+                    "password": "11"
+                },
+                {
+                    "ip": "192.168.1.216",
+                    "username": "root",
+                    "password": "11"
+                },
+                {
+                    "ip": "192.168.1.221",
+                    "username": "root",
+                    "password": "11"
+                },
+                {
+                    "ip": "192.168.1.131",
+                    "username": "root",
+                    "password": "11"
+                },
+                {
+                    "ip": "192.168.1.190",
+                    "username": "root",
+                    "password": "11"
+                },
+                {
+                    "ip": "192.168.1.156",
+                    "username": "root",
+                    "password": "11"
+                },
+                {
+                    "ip": "192.168.1.215",
+                    "username": "root",
+                    "password": "11"
+                },
+                {
+                    "ip": "192.168.1.166",
+                    "username": "root",
+                    "password": "11"
+                },
+                {
+                    "ip": "192.168.1.232",
+                    "username": "root",
+                    "password": "11"
+                },
+                {
+                    "ip": "192.168.1.208",
+                    "username": "root",
+                    "password": "11"
+                }
+            ]
+        },
+        "rack1.5": {
+            "rmc_ip": "192.168.1.179",
+            "w400_ip": "192.168.1.180",
+            "username": "root",
+            "w400_x86_ip": "",
+            "w400_x86_username": "root",
+            "password": "0penBmc",
+            "w400_x86_password": "11",
+            "th6_devices": [
+                {
+                    "mac": "88:5a:23:50:d2:60",
+                    "x86_username": "root",
+                    "x86_password": "11",
+                    "bmc_username": "root",
+                    "bmc_password": "0penBmc"
+                },
+                {
+                    "mac": "88:5a:23:50:d3:78",
+                    "x86_username": "root",
+                    "x86_password": "11",
+                    "bmc_username": "root",
+                    "bmc_password": "0penBmc"
+                },
+                {
+                    "mac": "88:5a:23:50:d4:04",
+                    "x86_username": "root",
+                    "x86_password": "11",
+                    "bmc_username": "root",
+                    "bmc_password": "0penBmc"
+                },
+                {
+                    "mac": "88:5a:23:50:d4:90",
+                    "x86_username": "root",
+                    "x86_password": "11",
+                    "bmc_username": "root",
+                    "bmc_password": "0penBmc"
+                },
+                {
+                    "mac": "88:5a:23:50:d6:34",
+                    "x86_username": "root",
+                    "x86_password": "11",
+                    "bmc_username": "root",
+                    "bmc_password": "0penBmc"
+                },
+                {
+                    "mac": "88:5a:23:50:d7:d8",
+                    "x86_username": "root",
+                    "x86_password": "11",
+                    "bmc_username": "root",
+                    "bmc_password": "0penBmc"
+                },
+                {
+                    "mac": "88:5a:23:50:d9:7c",
+                    "x86_username": "root",
+                    "x86_password": "11",
+                    "bmc_username": "root",
+                    "bmc_password": "0penBmc"
+                },
+                {
+                    "mac": "88:5a:23:50:db:20",
+                    "x86_username": "root",
+                    "x86_password": "11",
+                    "bmc_username": "root",
+                    "bmc_password": "0penBmc"
+                },
+                {
+                    "mac": "88:5a:23:50:db:ac",
+                    "x86_username": "root",
+                    "x86_password": "11",
+                    "bmc_username": "root",
+                    "bmc_password": "0penBmc"
+                },
+                {
+                    "mac": "88:5a:23:50:dd:50",
+                    "x86_username": "root",
+                    "x86_password": "11",
+                    "bmc_username": "root",
+                    "bmc_password": "0penBmc"
+                },
+                {
+                    "mac": "88:5a:23:50:dd:dc",
+                    "x86_username": "root",
+                    "x86_password": "11",
+                    "bmc_username": "root",
+                    "bmc_password": "0penBmc"
+                },
+                {
+                    "mac": "88:5a:23:50:df:80",
+                    "x86_username": "root",
+                    "x86_password": "11",
+                    "bmc_username": "root",
+                    "bmc_password": "0penBmc"
+                }
+            ]
+        }
+    },
+    "default_log_dir": "logs"
 }

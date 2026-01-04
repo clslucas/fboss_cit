@@ -7,6 +7,7 @@ import sys
 from datetime import datetime
 import json # Added for loading external configuration
 from remote_client import RemoteClient
+import subprocess
 import re
 from utils import Colors
 
@@ -36,6 +37,58 @@ def test_wrapper(title):
         return wrapper
     return decorator
 
+def get_local_arp_table():
+    """
+    Executes the 'arp -n' command locally and parses its output into a
+    dictionary mapping MAC addresses to IP addresses.
+
+    Returns:
+        dict: A dictionary where keys are MAC addresses (str) and values are
+              IP addresses (str). Returns an empty dict if 'arp' command fails.
+    """
+    arp_table = {}
+    print("Fetching local ARP table to resolve MAC addresses...")
+    try:
+        # Execute the arp command and capture its output
+        result = subprocess.run(
+            ['arp', '-n'], capture_output=True, text=True, check=False, encoding='utf-8'
+        )
+        if result.returncode != 0:
+            print(f"{Colors.YELLOW}Warning: 'arp -n' command failed. Cannot resolve MACs to IPs.{Colors.NC}", file=sys.stderr)
+            return arp_table
+
+        # Iterate over each line in the command's output, skipping the header
+        for line in result.stdout.splitlines()[1:]:
+            parts = re.split(r'\s+', line.strip())
+            if len(parts) >= 3:
+                ip_address, mac_address = parts[0], parts[2]
+                if re.match(r'([0-9a-f]{2}(?::[0-9a-f]{2}){5})', mac_address, re.IGNORECASE):
+                    arp_table[mac_address.lower()] = ip_address
+    except FileNotFoundError:
+        print(f"{Colors.RED}Error: 'arp' command not found. Cannot resolve MAC addresses.{Colors.NC}", file=sys.stderr)
+
+    return arp_table
+
+def increment_mac(mac_string):
+    """
+    Increments a MAC address by one.
+    Args:
+        mac_string (str): The MAC address in 'XX:XX:XX:XX:XX:XX' format.
+    Returns:
+        str: The incremented MAC address in the same format, or None if input is invalid.
+    """
+    try:
+        # Remove delimiters and convert from hex to an integer
+        mac_int = int(mac_string.replace(':', ''), 16)
+        # Increment the integer value
+        mac_int += 1
+        # Convert back to a 12-character zero-padded hex string
+        inc_mac_hex = format(mac_int, '012x')
+        # Re-insert the colons
+        return ':'.join(inc_mac_hex[i:i+2] for i in range(0, 12, 2))
+    except (ValueError, TypeError):
+        return None
+
 def load_configuration():
     """Loads configuration from config.json, creating it with defaults if it doesn't exist."""
     # New structure with profiles, including a list for TH6 devices
@@ -48,18 +101,18 @@ def load_configuration():
         "w400_x86_username": "root",
         "w400_x86_password": "11",
         "th6_devices": [
-            {"ip": "192.168.1.191", "username": "root", "password": "11"},
-            {"ip": "192.168.1.206", "username": "root", "password": "11"},
-            {"ip": "192.168.1.123", "username": "root", "password": "11"},
-            {"ip": "192.168.1.216", "username": "root", "password": "11"},
-            {"ip": "192.168.1.221", "username": "root", "password": "11"},
-            {"ip": "192.168.1.131", "username": "root", "password": "11"},
-            {"ip": "192.168.1.190", "username": "root", "password": "11"},
-            {"ip": "192.168.1.156", "username": "root", "password": "11"},
-            {"ip": "192.168.1.215", "username": "root", "password": "11"},
-            {"ip": "192.168.1.166", "username": "root", "password": "11"},
-            {"ip": "192.168.1.232", "username": "root", "password": "11"},
-            {"ip": "192.168.1.208", "username": "root", "password": "11"}
+            {"ip": "192.168.1.100", "x86_username": "root", "x86_password": "11", "bmc_username": "root", "bmc_password": "0penBmc"},
+            {"ip": "192.168.1.206", "x86_username": "root", "x86_password": "11", "bmc_username": "root", "bmc_password": "0penBmc"},
+            {"ip": "192.168.1.123", "x86_username": "root", "x86_password": "11", "bmc_username": "root", "bmc_password": "0penBmc"},
+            {"ip": "192.168.1.216", "x86_username": "root", "x86_password": "11", "bmc_username": "root", "bmc_password": "0penBmc"},
+            {"ip": "192.168.1.221", "x86_username": "root", "x86_password": "11", "bmc_username": "root", "bmc_password": "0penBmc"},
+            {"ip": "192.168.1.131", "x86_username": "root", "x86_password": "11", "bmc_username": "root", "bmc_password": "0penBmc"},
+            {"ip": "192.168.1.190", "x86_username": "root", "x86_password": "11", "bmc_username": "root", "bmc_password": "0penBmc"},
+            {"ip": "192.168.1.156", "x86_username": "root", "x86_password": "11", "bmc_username": "root", "bmc_password": "0penBmc"},
+            {"ip": "192.168.1.215", "x86_username": "root", "x86_password": "11", "bmc_username": "root", "bmc_password": "0penBmc"},
+            {"ip": "192.168.1.166", "x86_username": "root", "x86_password": "11", "bmc_username": "root", "bmc_password": "0penBmc"},
+            {"mac": "00:1a:2b:3c:4d:5e", "x86_username": "root", "x86_password": "11", "bmc_username": "root", "bmc_password": "0penBmc"}, # Example with MAC
+            {"ip": "192.168.1.208", "x86_username": "root", "x86_password": "11", "bmc_username": "root", "bmc_password": "0penBmc"}
         ] # Default 12 TH6 devices
     }
     # Ensure default TH6 IPs are unique and within a reasonable range for example
@@ -127,11 +180,12 @@ def save_configuration(config):
 class Diagnostics:
     """Container for all diagnostic test functions."""
 
-    def __init__(self, rmc_client, w400_client, w400_x86_client=None, th6_clients=None):
+    def __init__(self, rmc_client, w400_client, w400_x86_client=None, th6_clients=None, th6_bmc_clients=None):
         self.rmc = rmc_client
         self.w400 = w400_client
         self.w400_x86 = w400_x86_client
         self.th6_clients = th6_clients if th6_clients is not None else []
+        self.th6_bmc_clients = th6_bmc_clients if th6_bmc_clients is not None else []
 
     # --- RMC Specific Functions ---
     @test_wrapper("Running RMC Status Check")
@@ -350,7 +404,7 @@ class Diagnostics:
         self.w400.run_command("weutil; seutil; bsm-eutil; psu-util psu2 --get_eeprom_info")
 
     @test_wrapper("Checking ALLC Sensor Status (W400)")
-    def check_allc_sensor_status(self):
+    def check_aalc_sensor_status(self):
         print(f"{Colors.YELLOW}Checking dev-addr 12 for ALLC sensor status:{Colors.NC}")
         cmd = "rackmoncli data --dev-addr 12 | grep -E 'TACH_RPM|temp|Hum_Pct_RH|HSC_P48V|Alarm'"
         self.w400.run_command(cmd)
@@ -628,6 +682,12 @@ class Diagnostics:
             command = "for f in /sys/class/hwmon/hwmon*/fan*_input; do echo -n \"$f: \"; cat \"$f\"; done"
             th6_client.run_command(command)
 
+    @test_wrapper("Checking TH6 BMC Versions")
+    def check_th6_bmc_versions(self):
+        for i, th6_bmc_client in enumerate(self.th6_bmc_clients, 1):
+            print(f"\n{Colors.CYAN}--- Checking Versions on TH6-{i} BMC ({th6_bmc_client.hostname}) ---{Colors.NC}")
+            th6_bmc_client.run_command("cat /etc/os-release; cat /etc/issue")
+
     # --- One-Key Block Test Functions ---
     def run_all_rmc_tests(self):
         print(f"\n{Colors.BLUE}======================================={Colors.NC}")
@@ -675,7 +735,7 @@ class Diagnostics:
         self.check_power_shelf_version()
         self.check_psu_bbu_versions()
         self.check_power_fru_info()
-        self.check_allc_sensor_status()
+        self.check_aalc_sensor_status()
         self.check_w400_fru_info()
         self.check_aalc_leakage_sensor_status()
         self.check_w400_sensor_status()
@@ -693,7 +753,7 @@ class Diagnostics:
 class Menu:
     """Handles the user-facing menu system."""
 
-    def __init__(self, diag, rmc_ip, w400_ip, user, w400_x86_ip=None, w400_x86_user=None, th6_clients=None):
+    def __init__(self, diag, rmc_ip, w400_ip, user, w400_x86_ip=None, w400_x86_user=None, th6_clients=None, th6_bmc_clients=None):
         self.diag = diag
         self.rmc_ip = rmc_ip
         self.w400_ip = w400_ip
@@ -701,6 +761,7 @@ class Menu:
         self.w400_x86_ip = w400_x86_ip
         self.w400_x86_user = w400_x86_user
         self.th6_clients = th6_clients if th6_clients is not None else []
+        self.th6_bmc_clients = th6_bmc_clients if th6_bmc_clients is not None else []
 
         self.rmc_menu_items = [
             ("Run Full RMC Status Check", self.diag.run_rmc_status_check),
@@ -721,7 +782,7 @@ class Menu:
             ("Check Power Shelf Version", self.diag.check_power_shelf_version),
             ("Check PSU and BBU Versions", self.diag.check_psu_bbu_versions),
             ("Check Power FRU Info", self.diag.check_power_fru_info),
-            ("Check ALLC Sensor Status", self.diag.check_allc_sensor_status),
+            ("Check ALLC Sensor Status", self.diag.check_aalc_sensor_status),
             ("Check W400 FRU Information", self.diag.check_w400_fru_info),
             ("Check AALC Leakage Sensor Status", self.diag.check_aalc_leakage_sensor_status),
             ("Check Total PSU Output Power", self.diag.check_psu_output_power),
@@ -744,6 +805,9 @@ class Menu:
             ("Check Fan Speed (RPM)", self.diag.check_fan_speed_rpm),
             ("Set Fan PWM Value", self.diag.set_fan_pwm_value),
         ]
+        self.th6_bmc_menu_items = [
+            ("Check TH6 BMC Versions", self.diag.check_th6_bmc_versions),
+        ]
 
     def _show_menu(self, title, menu_items):
         while True:
@@ -762,7 +826,6 @@ class Menu:
                 if 1 <= choice_idx <= len(menu_items):
                     print()
                     menu_items[choice_idx - 1][1]() # Execute the function
-                    input(f"\n{Colors.YELLOW}Press Enter to continue...{Colors.NC}")
                 elif choice_idx == back_option:
                     return
                 else:
@@ -783,6 +846,14 @@ class Menu:
             return
 
         self._show_menu("TH6 Diagnostics Menu", self.th6_menu_items)
+
+    def th6_bmc_menu(self):
+        if not self.th6_bmc_clients:
+            print(f"{Colors.YELLOW}No TH6 BMCs configured or connected.{Colors.NC}")
+            input(f"\n{Colors.YELLOW}Press Enter to continue...{Colors.NC}")
+            return
+
+        self._show_menu("TH6 BMC Diagnostics Menu", self.th6_bmc_menu_items)
 
     def w400_x86_menu(self):
         self._show_menu("Wedge400 x86 Diagnostics Menu", self.w400_x86_menu_items)
@@ -826,32 +897,6 @@ class Menu:
         print(f"\n{Colors.YELLOW}Executing uploaded script on {target_name}: '{command_to_run}'{Colors.NC}")
         target_client.run_command(command_to_run)
 
-    def find_ip_from_mac(self):
-        """Finds a device's IP address from its MAC address using the arp command."""
-        print(f"\n{Colors.BLUE}--- Find IP from MAC Address ---{Colors.NC}")
-        scanner_client, scanner_name = self._select_target_device("Select a device to run 'arp' on")
-        if not scanner_client:
-            return
-
-        mac_to_find = input("Enter the MAC address to find (e.g., 00:1a:2b:3c:4d:5e): ").lower().strip()
-        if not mac_to_find:
-            print(f"{Colors.RED}No MAC address entered. Aborting.{Colors.NC}")
-            return
-
-        print(f"\n{Colors.YELLOW}Searching for MAC {mac_to_find} using {scanner_name}...{Colors.NC}")
-        output, exit_code = scanner_client.run_command("arp -n")
-
-        found = False
-        for line in output.splitlines():
-            if mac_to_find in line.lower():
-                ip_address = line.split()[0]
-                print(f"{Colors.GREEN}Found matching device! IP Address: {ip_address}{Colors.NC}")
-                found = True
-                break
-        
-        if not found:
-            print(f"{Colors.RED}Could not find a device with MAC address {mac_to_find} in the ARP table of {scanner_name}.{Colors.NC}")
-
     def _select_target_device(self, action_text):
         """
         Dynamically builds a menu of available targets and prompts the user for a selection.
@@ -877,6 +922,12 @@ class Menu:
                 targets[key] = (th6_client, f"TH6-{i} ({th6_client.hostname})")
                 print(f"  ({key}) TH6-{i} ({th6_client.hostname})")
 
+        # Dynamically add TH6 BMCs to the selection
+        if self.diag.th6_bmc_clients:
+            for i, th6_bmc_client in enumerate(self.diag.th6_bmc_clients, 1):
+                key = f"b{i}"
+                targets[key] = (th6_bmc_client, f"TH6-{i} BMC ({th6_bmc_client.hostname})")
+                print(f"  ({key}) TH6-{i} BMC ({th6_bmc_client.hostname})")
         while True:
             choice = input(prompt).lower()
             if choice in targets:
@@ -897,11 +948,13 @@ class Menu:
 
         # Add a single entry for all TH6 devices
         if self.diag.th6_clients:
-            main_menu_items.append(("TH6 Diagnostics (Individual Tests)", self.th6_menu))
+            main_menu_items.append(("TH6 X86 Diagnostics (Individual Tests)", self.th6_menu))
+        # Add a single entry for all TH6 BMCs
+        if self.diag.th6_bmc_clients:
+            main_menu_items.append(("TH6 BMC Diagnostics (Individual Tests)", self.th6_bmc_menu))
 
         main_menu_items.append(("Run Custom Command", self._run_custom_command))
         main_menu_items.append(("Upload and Execute Script", self._upload_and_run_script))
-        main_menu_items.append(("Find IP from MAC Address", self.find_ip_from_mac))
 
         while True:
             print(f"\n{Colors.BLUE}======================================={Colors.NC}")
@@ -914,6 +967,9 @@ class Menu:
                 # Display a summary of TH6 targets
                 th6_ips = ", ".join([c.hostname for c in self.diag.th6_clients])
                 print(f"  TH6 Targets:     {Colors.YELLOW}{th6_ips}{Colors.NC}")
+            if self.diag.th6_bmc_clients:
+                th6_bmc_ips = ", ".join([c.hostname for c in self.diag.th6_bmc_clients])
+                print(f"  TH6 BMC Targets: {Colors.YELLOW}{th6_bmc_ips}{Colors.NC}")
             print(f"{Colors.BLUE}======================================={Colors.NC}")
 
             for i, (text, _) in enumerate(main_menu_items, 1):
@@ -930,7 +986,6 @@ class Menu:
                 if 1 <= choice_idx <= len(main_menu_items):
                     print()
                     main_menu_items[choice_idx - 1][1]() # Execute the function
-                    input(f"\n{Colors.YELLOW}Press Enter to continue...{Colors.NC}")
                 elif choice_idx == change_target_option:
                     return "change_target"
                 elif choice_idx == exit_option:
@@ -960,12 +1015,17 @@ def create_new_profile():
 
     profile['th6_devices'] = []
     print(f"\n{Colors.BLUE}--- TH6 Devices Configuration (up to 12 units) ---{Colors.NC}")
-    for i in range(1, 13): # Allow up to 12 TH6 units
-        th6_ip = input(f"Enter IP for TH6-{i} (leave blank to stop adding TH6s): ")
-        if not th6_ip: break
-        th6_username = input(f"Enter username for TH6-{i} (default: root): ") or "root"
-        th6_password = getpass.getpass(f"Enter password for TH6-{i} (or blank for key-based): ") if use_pass == 'y' else ""
-        profile['th6_devices'].append({"ip": th6_ip, "username": th6_username, "password": th6_password})
+    for i in range(1, 13):
+        th6_identifier = input(f"Enter IP or MAC for TH6-{i} (leave blank to stop adding): ").strip()
+        if not th6_identifier: break
+        
+        th6_data = {}
+        th6_data['ip' if '.' in th6_identifier else 'mac'] = th6_identifier
+        th6_data['x86_username'] = input(f"Enter x86 username for TH6-{i} (default: root): ") or "root"
+        th6_data['bmc_username'] = input(f"Enter BMC username for TH6-{i} (default: root): ") or "root"
+        th6_data['x86_password'] = getpass.getpass(f"Enter x86 password for TH6-{i}: ") if use_pass == 'y' else ""
+        th6_data['bmc_password'] = getpass.getpass(f"Enter BMC password for TH6-{i}: ") if use_pass == 'y' else ""
+        profile['th6_devices'].append(th6_data)
     return profile
 
 def delete_profile(config):
@@ -1045,13 +1105,22 @@ def display_profile(profile, log_dir):
     print(f"W400 x86 Target:  {Colors.YELLOW}{profile['w400_x86_username']}@{profile['w400_x86_ip']} (via W400 BMC){Colors.NC}")
     if profile.get('th6_devices'):
         for i, th6 in enumerate(profile['th6_devices']):
-            print(f"TH6-{i+1} Target: {Colors.YELLOW}{th6['username']}@{th6['ip']}{Colors.NC}")
+            ip = th6.get('ip')
+            mac = th6.get('mac')
+            if ip:
+                # If an IP is specified, it's assumed to be for the x86. BMC connection isn't possible without a MAC.
+                x86_identifier = ip
+                bmc_identifier = "N/A (IP specified)"
+            elif mac:
+                # If a MAC is specified, derive the x86 MAC from the BMC MAC.
+                bmc_identifier = mac
+                x86_identifier = increment_mac(mac) or f"invalid({mac})"
+            print(f"TH6-{i+1} Target: x86={Colors.YELLOW}{th6.get('x86_username')}@{x86_identifier}{Colors.NC}, BMC={Colors.YELLOW}{th6.get('bmc_username')}@{bmc_identifier}{Colors.NC}")
 
     if log_dir:
         print(f"Logging to:   {Colors.YELLOW}{log_dir}{Colors.NC}")
     else:
         print(f"Logging:      {Colors.YELLOW}Disabled{Colors.NC}")
-    input(f"{Colors.YELLOW}Press Enter to continue to the main menu...{Colors.NC}")
 
 def main():
     """Main execution function."""
@@ -1059,6 +1128,7 @@ def main():
     w400_client = None
     w400_x86_client = None
     th6_clients = []
+    th6_bmc_clients = []
 
     config = load_configuration()
 
@@ -1091,23 +1161,55 @@ def main():
         w400_client = RemoteClient(profile_data['w400_ip'], profile_data['username'], profile_data.get('password'), log_dir)
         w400_x86_client = None # Reset
         th6_clients = [] # Reset
+        th6_bmc_clients = [] # Reset
 
         # Establish the proxy connection for the x86 client
         if w400_client.connect():
             w400_x86_client = RemoteClient(profile_data['w400_x86_ip'], profile_data['w400_x86_username'], profile_data.get('w400_x86_password'), log_dir)
             if not w400_x86_client.connect_via_proxy(w400_client.client):
                 w400_x86_client = None # Connection failed, disable x86 tests
-        
+
+        # Get the local ARP table once to be used for all MAC lookups.
+        local_arp_table = get_local_arp_table()
+
         # Create clients for TH6 devices
         for th6_data in profile_data.get('th6_devices', []):
-            th6_client = RemoteClient(th6_data['ip'], th6_data['username'], th6_data.get('password'), log_dir)
+            x86_ip = th6_data.get('ip')
+            mac = th6_data.get('mac')
+            bmc_ip = None
+
+            # If no IP is provided, try to resolve it from the MAC address.
+            if not x86_ip and mac:
+                # Resolve BMC IP from its MAC
+                bmc_ip = local_arp_table.get(mac.lower())
+                if bmc_ip:
+                    print(f"{Colors.GREEN}Resolved BMC MAC {mac} to IP {bmc_ip} from local ARP table.{Colors.NC}")
+
+                # Assume the configured MAC is the BMC MAC. The x86 MAC is BMC_MAC + 1.
+                x86_mac = increment_mac(mac)
+                if x86_mac:
+                    print(f"Derived x86 MAC {x86_mac} from BMC MAC {mac}")
+                    x86_ip = local_arp_table.get(x86_mac.lower())
+                else:
+                    print(f"{Colors.RED}Invalid MAC address format in config: {mac}{Colors.NC}")
+                if x86_ip:
+                    print(f"{Colors.GREEN}Resolved x86 MAC {x86_mac} to IP {x86_ip} from local ARP table.{Colors.NC}")
+            
+            # Connect to TH6 x86
+            th6_client = RemoteClient(x86_ip, th6_data.get('x86_username', 'root'), th6_data.get('x86_password'), log_dir)
             if th6_client.connect():
                 th6_clients.append(th6_client)
             else:
-                print(f"{Colors.RED}Failed to connect to TH6 device {th6_data['ip']}. Skipping.{Colors.NC}")
+                print(f"{Colors.RED}Failed to connect to TH6 device {x86_ip or mac}. Skipping.{Colors.NC}")
 
-        diag = Diagnostics(rmc_client, w400_client, w400_x86_client, th6_clients)
-        menu = Menu(diag, profile_data['rmc_ip'], profile_data['w400_ip'], profile_data['username'], profile_data['w400_x86_ip'], profile_data['w400_x86_username'], th6_clients)
+            # Connect to TH6 BMC if we found its IP
+            if bmc_ip:
+                th6_bmc_client = RemoteClient(bmc_ip, th6_data.get('bmc_username', 'root'), th6_data.get('bmc_password'), log_dir)
+                if th6_bmc_client.connect():
+                    th6_bmc_clients.append(th6_bmc_client)
+
+        diag = Diagnostics(rmc_client, w400_client, w400_x86_client, th6_clients, th6_bmc_clients)
+        menu = Menu(diag, profile_data['rmc_ip'], profile_data['w400_ip'], profile_data['username'], profile_data['w400_x86_ip'], profile_data['w400_x86_username'], th6_clients, th6_bmc_clients)
         
         # Create log directory if specified
         if log_dir:
@@ -1127,6 +1229,8 @@ def main():
             w400_x86_client.close()
         for th6_client in th6_clients:
             th6_client.close()
+        for th6_bmc_client in th6_bmc_clients:
+            th6_bmc_client.close()
         
         # The main_menu now returns "exit" or "change_target"
         if menu_action == "exit":
