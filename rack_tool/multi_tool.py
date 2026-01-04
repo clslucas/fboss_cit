@@ -7,6 +7,7 @@ import os
 import concurrent.futures
 import json
 from contextlib import contextmanager
+import shlex
 import time
 import paramiko
 from utils import Colors
@@ -17,7 +18,7 @@ DEFAULT_USERNAME = "root"
 DEFAULT_PASSWORD = "" # Insecure, use SSH keys if possible.
 MAX_WORKERS = 10
 CONNECTION_RETRIES = 3
-RETRY_DELAY_SECONDS = 5
+RETRY_DELAY_SECONDS = 1
 DEFAULT_CLIENTS = []
 
 class RemoteOperation:
@@ -47,11 +48,16 @@ class RemoteOperation:
                     )
                     yield client  # Connection successful, yield to the 'with' block
                     return      # Exit after successful operation
+                except paramiko.AuthenticationException as e:
+                    # Don't retry on authentication failure. It's not a transient error.
+                    last_exception = e
+                    break # Exit the retry loop immediately
                 except Exception as e:
                     last_exception = e
                     if attempt < CONNECTION_RETRIES - 1:
                         print(f"{Colors.YELLOW}   Connection to '{self.hostname}' failed (attempt {attempt + 1}/{CONNECTION_RETRIES}). Retrying in {RETRY_DELAY_SECONDS}s... ({e}){Colors.NC}", file=sys.stderr)
                         time.sleep(RETRY_DELAY_SECONDS)
+
             raise last_exception  # Re-raise the last exception after all retries fail
         finally:
             if client:
@@ -73,7 +79,11 @@ class RemoteOperation:
                     log_file = open(log_path, 'w')
                     log_file.write(f"--- Command: {command} ---\n")
 
-                stdin, stdout, stderr = client.exec_command(command, timeout=command_timeout)
+                # Wrap the command to source the profile, ensuring PATH is set correctly.
+                # This makes commands like 'wedge_power.sh' work without the full path.
+                # Use shlex.quote() for a robust and safe way to escape the command.
+                wrapped_command = f"bash -l -c {shlex.quote(command)}"
+                stdin, stdout, stderr = client.exec_command(wrapped_command, timeout=command_timeout, get_pty=True)
 
                 # Read from the streams while the connection is still open
                 for line in iter(stdout.readline, ""):
@@ -92,7 +102,7 @@ class RemoteOperation:
             }
 
         except paramiko.AuthenticationException as e:
-            return {"hostname": self.hostname, "success": False, "exit_code": -1, "stdout": "", "stderr": f"FAILURE: Authentication failed on '{self.hostname}': {e}"}
+            return {"hostname": self.hostname, "success": False, "exit_code": -1, "stdout": "", "stderr": f"FAILURE: Authentication failed on '{self.hostname}': {e}\n"}
         except Exception as e:
             return {
                 "hostname": self.hostname, "success": False, "exit_code": -1,
@@ -155,16 +165,16 @@ class RemoteOperation:
             with self._get_connection() as client:
                 # --- Part 1: Upload the file ---
                 with client.open_sftp() as sftp:
-                    remote_script_name = os.path.basename(local_path)
-                    # Ensure remote_dir is treated as a directory
-                    if not remote_dir.endswith('/'):
-                        remote_dir += '/'
-                    remote_script_path = f"{remote_dir}{remote_script_name}"
+                    remote_script_name = os.path.basename(local_path) # e.g., "my_script.sh"
+                    remote_script_path = f"{remote_dir.rstrip('/')}/{remote_script_name}" # e.g., "/tmp/my_script.sh"
                     sftp.put(local_path, remote_script_path)
 
                 # --- Part 2: Execute the script ---
-                command = f"chmod +x {remote_script_path} && {remote_script_path} {script_args}"
-                stdin, stdout, stderr = client.exec_command(command, timeout=command_timeout)
+                command = f"chmod +x '{remote_script_path}' && '{remote_script_path}' {script_args}"
+                # Also wrap this command to ensure a consistent execution environment.
+                # Use shlex.quote() for a robust and safe way to escape the command.
+                wrapped_command = f"bash -l -c {shlex.quote(command)}"
+                stdin, stdout, stderr = client.exec_command(wrapped_command, timeout=command_timeout, get_pty=True)
 
                 for line in iter(stdout.readline, ""):
                     stdout_buffer.append(line)
@@ -240,10 +250,10 @@ def handle_exec(args):
             if res['success']:
                 print(f"{Colors.GREEN}   SUCCESS: Command executed on '{res['hostname']}'.{Colors.NC}")
             else:
-                if res['exit_code'] != -1:
+                # Only print a generic failure if a specific one isn't already in stderr
+                if "FAILURE:" not in res['stderr'] and res['exit_code'] != -1:
                     print(f"{Colors.RED}   FAILURE: Command failed on '{res['hostname']}' with exit code {res['exit_code']}.{Colors.NC}")
-                else: # Exception case
-                    # The error is already in stderr, so just a simple failure message
+                elif "FAILURE:" not in res['stderr']:
                     print(f"{Colors.RED}   FAILURE: Could not execute on '{res['hostname']}'.{Colors.NC}")
             print("----------------------------------------")
 
@@ -289,8 +299,8 @@ def handle_scp(args):
             print(f"-> Results for {Colors.YELLOW}{args.user}@{res['hostname']}{Colors.NC}:")
             print("----------------------------------------")
             color = Colors.GREEN if res['success'] else Colors.RED
-            status = "SUCCESS" if res['success'] else "FAILURE"
-            print(f"{color}   {status}: {res['message']}{Colors.NC}")
+            status_text = "SUCCESS" if res['success'] else "FAILURE"
+            print(f"{color}   {status_text}: {res['message']}{Colors.NC}")
             print("----------------------------------------")
 
     return sum(1 for r in results if r['success']), sum(1 for r in results if not r['success'])
@@ -385,8 +395,10 @@ def handle_upload_exec(args):
             if res['success']:
                 print(f"{Colors.GREEN}   SUCCESS: Script executed on '{res['hostname']}'.{Colors.NC}")
             else:
-                if res['exit_code'] != -1:
+                if "FAILURE:" not in res['stderr'] and res['exit_code'] != -1:
                     print(f"{Colors.RED}   FAILURE: Script failed on '{res['hostname']}' with exit code {res['exit_code']}.{Colors.NC}")
+                elif "FAILURE:" not in res['stderr']:
+                    print(f"{Colors.RED}   FAILURE: Could not upload or execute on '{res['hostname']}'.{Colors.NC}")
             print("----------------------------------------")
 
     return sum(1 for r in results if r['success']), sum(1 for r in results if not r['success'])
@@ -426,7 +438,7 @@ GENERAL USAGE:
 
     # --- Parent parser for shared arguments ---
     parent_parser = argparse.ArgumentParser(add_help=False)
-    parent_parser.add_argument("clients", nargs='*', help="Space-separated list of client IPs. If omitted, uses the hardcoded default list.")
+    # This is intentionally left blank. Sub-parsers will add the positional arguments.
     parent_parser.add_argument("--config", default=CONFIG_FILE, help=f"Path to a custom JSON configuration file. (Default: '{CONFIG_FILE}')")
     parent_parser.add_argument("-u", "--user", default=DEFAULT_USERNAME, help=f"Remote username. (Default: '{DEFAULT_USERNAME}')")
     parent_parser.add_argument("-p", "--prompt-password", action="store_true", help="Prompt for a password. Overrides SSH keys or the hardcoded default.")
@@ -442,9 +454,10 @@ Examples:
   %(prog)s "ls -l /tmp" 192.168.1.100 192.168.1.101 --json
 
   # Run a command and save logs for each host
-  %(prog)s "cat /var/log/syslog" --log-dir /tmp/logs
+  %(prog)s "cat /var/log/syslog" 192.168.1.100 --log-dir /tmp/logs
 """)
     parser_exec.add_argument("command", help="The command to execute (in quotes).")
+    parser_exec.add_argument("clients", nargs='*', help="Space-separated list of client IPs. If omitted, uses the default list from the config file.")
     parser_exec.add_argument("--log-dir", help="Directory to save command output logs.", metavar="PATH")
     parser_exec.add_argument("--timeout", type=int, help="Timeout in seconds for the remote command.", metavar="SECONDS")
     parser_exec.set_defaults(func=handle_exec)
@@ -456,16 +469,17 @@ Examples:
   %(prog)s my_script.sh /tmp/
 
   # Upload a file to a specific host, prompting for a password
-  %(prog)s ./config.yaml /home/user/ -p 10.0.0.5
+  %(prog)s ./config.yaml /home/user/ 10.0.0.5 -p
 """)
     parser_scp.add_argument("local_file", help="The local file to transfer.")
     parser_scp.add_argument("remote_path", help="The destination directory on remote hosts.")
+    parser_scp.add_argument("clients", nargs='*', help="Space-separated list of client IPs. If omitted, uses the default list from the config file.")
     parser_scp.set_defaults(func=handle_scp)
 
     # --- 'download' sub-command ---
     parser_download = subparsers.add_parser("download", parents=[parent_parser], help="Download a file from remote hosts.", epilog="""
 Examples:
-  # Download a log file from all default hosts into the './downloads' directory
+  # Download a log file from all default hosts into './downloads'
   %(prog)s /var/log/syslog ./downloads
 
   # Download a config file from a specific host
@@ -473,19 +487,21 @@ Examples:
 """)
     parser_download.add_argument("remote_file", help="The full path of the file to download from remote hosts.")
     parser_download.add_argument("local_dir", help="The local directory to save downloaded files into.")
+    parser_download.add_argument("clients", nargs='*', help="Space-separated list of client IPs. If omitted, uses the default list from the config file.")
     parser_download.set_defaults(func=handle_download)
 
     # --- 'upload-exec' sub-command ---
     parser_upload_exec = subparsers.add_parser("upload-exec", parents=[parent_parser], help="Upload a script and execute it.", epilog="""
 Examples:
-  # Upload 'check.sh' to /tmp and run it on all default hosts
-  %(prog)s ./check.sh /tmp
+  # Upload 'check.sh' to the default remote path (/tmp) and run it
+  %(prog)s ./check.sh
 
   # Upload a script and run it with arguments
-  %(prog)s ./setup.sh /opt/ --args "--force --verbose"
+  %(prog)s ./setup.sh 192.168.1.100 --remote-path /opt/ --args "--force --verbose"
 """)
     parser_upload_exec.add_argument("local_file", help="The local script to upload and execute.")
-    parser_upload_exec.add_argument("remote_path", help="The destination directory on remote hosts.")
+    parser_upload_exec.add_argument("clients", nargs='*', help="Space-separated list of client IPs. If omitted, uses the default list from the config file.")
+    parser_upload_exec.add_argument("--remote-path", default="/tmp", help="The destination directory on remote hosts. (Default: /tmp)")
     parser_upload_exec.add_argument("--args", dest="script_args", default="", help="A string of arguments to pass to the remote script (in quotes).")
     parser_upload_exec.add_argument("--timeout", type=int, help="Timeout in seconds for the remote script execution.", metavar="SECONDS")
     parser_upload_exec.set_defaults(func=handle_upload_exec)
