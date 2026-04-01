@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 import argparse
 import logging
-import os
 import sys
 import datetime
 import json
 import concurrent.futures
+import re
 from pathlib import Path
 import paramiko
 
@@ -114,15 +114,18 @@ def deploy_package(ssh_client, package_config, local_tar_path, cleanup=False):
         if install_type == "rpm":
             rpm_filename = package_config.get("rpm_filename")
             if rpm_filename:
-                # If a specific RPM is defined, construct its path directly.
-                find_rpm_dir = package_config.get("find_rpm_dir", ".")
-                rpm_path_str = str(remote_base_dir / find_rpm_dir / rpm_filename)
+                # Dynamically determine the extracted directory name from the tarball name.
+                # This handles cases like 'IceTea' vs 'IceCube'.
+                # It removes .tar and .tar.gz suffixes.
+                extracted_dir_name = local_tar_path.name.removesuffix('.tar.gz').removesuffix('.tar')
+                find_rpm_dir = Path(extracted_dir_name)
+                rpm_path_str = str(remote_base_dir / find_rpm_dir / rpm_filename) # This was likely correct
                 rpm_msg = f"Using specified {package_name} RPM: {rpm_path_str}"
                 ssh_client.logger.info(rpm_msg)
                 logging.info(f"[{ssh_client.hostname}] {rpm_msg}")
             else:
                 # Fallback to finding the first RPM if not specified.
-                find_rpm_dir = package_config.get("find_rpm_dir", ".")
+                find_rpm_dir = Path(package_config.get("find_rpm_dir", "."))
                 rpm_path_str = ssh_client.execute(f"find {remote_base_dir / find_rpm_dir} -name '*.rpm' -print -quit")
                 if not rpm_path_str:
                     raise FileNotFoundError(f"Could not find any RPM for {package_name} and none was specified.")
@@ -137,7 +140,15 @@ def deploy_package(ssh_client, package_config, local_tar_path, cleanup=False):
             ssh_client.logger.info(verify_name_msg)
             logging.info(f"[{ssh_client.hostname}] {verify_name_msg}")
 
-            ssh_client.execute(f"dnf install -y {rpm_path_str}")
+            # For the BSP package, use rpm with --nodeps and --force to bypass dependency checks.
+            # For all other RPMs, use the more robust 'dnf install' for dependency resolution.
+            if package_config.get("name") == "bsp":
+                install_cmd = f"rpm -Uvh --nodeps --force {rpm_path_str}"
+                ssh_client.logger.info("Using 'rpm --nodeps --force' for BSP package.")
+            else:
+                install_cmd = f"dnf install -y --allowerasing {rpm_path_str}"
+
+            ssh_client.execute(install_cmd)
             package_config["_rpm_name_for_verification"] = rpm_name_to_verify
 
         elif install_type == "script":
@@ -145,6 +156,34 @@ def deploy_package(ssh_client, package_config, local_tar_path, cleanup=False):
                 # Chain all commands to run in the same shell session, from the base directory.
                 full_command = " && ".join(package_config["install_cmds"])
                 ssh_client.execute(f"cd {remote_base_dir} && {full_command}")
+
+        elif install_type == "custom_script":
+            if "install_cmds" in package_config:
+                ssh_client.logger.info(f"Executing custom install script for {package_name}...")
+                full_command = " && ".join(package_config["install_cmds"])
+                ssh_client.execute(full_command)
+
+        elif install_type == "os_update":
+            # This is a special installer for the main OS package.
+            # It assumes the extracted folder name matches the tarball name without extension.
+            extracted_dir_name = local_tar_path.stem.replace('.tar', '') # Handles .tar.gz as well
+            os_package_root = remote_base_dir / extracted_dir_name
+            
+            # 1. Upload the install_os.sh script to the correct sub-directory
+            install_script_name = package_config.get("install_script", "install_os.sh")
+            local_install_script_path = Path(install_script_name)
+            if not local_install_script_path.exists():
+                raise FileNotFoundError(f"Required OS install script '{install_script_name}' not found in current directory.")
+            
+            remote_script_dir = os_package_root / "OS"
+            ssh_client.execute(f"mkdir -p {remote_script_dir}")
+            ssh_client.upload_file(str(local_install_script_path), str(remote_script_dir / install_script_name))
+
+            # 2. Execute the installation script with the configured kernel version
+            kernel_version = package_config.get("kernel_version")
+            if not kernel_version:
+                raise ValueError(f"Package '{package_name}' with type 'os_update' requires 'kernel_version' to be set.")
+            ssh_client.execute(f"cd {remote_script_dir} && bash ./{install_script_name} {kernel_version}")
 
         else:
             raise ValueError(f"Unknown install_type '{install_type}' for package {package_name}")
@@ -155,28 +194,51 @@ def deploy_package(ssh_client, package_config, local_tar_path, cleanup=False):
         ssh_client.logger.info(verification_msg_prefix + "...")
         logging.info(f"[{ssh_client.hostname}] {verification_msg_prefix}...")
 
+        verification_performed = False
+
         # Check for the dynamically discovered RPM name first
         if "_rpm_name_for_verification" in package_config:
+            verification_performed = True
             rpm_name_to_verify = package_config["_rpm_name_for_verification"]
             ssh_client.execute(f"rpm -q {rpm_name_to_verify}")
             success_msg = f"Verification successful: RPM '{rpm_name_to_verify}' is installed."
             ssh_client.logger.info(success_msg)
             logging.info(f"[{ssh_client.hostname}] {success_msg}")
-        elif "verify_path_exists" in package_config:
+        
+        if "verify_path_exists" in package_config:
+            verification_performed = True
             path_to_verify = package_config["verify_path_exists"]
             ssh_client.execute(f"test -e {path_to_verify}")
             success_msg = f"Verification successful: Path '{path_to_verify}' exists."
             ssh_client.logger.info(success_msg)
             logging.info(f"[{ssh_client.hostname}] {success_msg}")
-        else:
+
+        if "verify_cmds" in package_config:
+            verification_performed = True
+            ssh_client.logger.info(f"Running verification commands for {package_name}...")
+            logging.info(f"[{ssh_client.hostname}] Running verification commands for {package_name}...")
+            # Prepend PATH export to each command to ensure tools like rackmoncli are found.
+            # Each exec_command is a new session, so the PATH must be set each time.
+            for cmd in package_config["verify_cmds"]:
+                full_cmd = f"export PATH=$PATH:/usr/local/bin && {cmd}"
+                ssh_client.execute(full_cmd)
+            success_msg = f"Verification successful: All verification commands passed for {package_name}."
+            ssh_client.logger.info(success_msg)
+            logging.info(f"[{ssh_client.hostname}] {success_msg}")
+
+        if not verification_performed:
             ssh_client.logger.warning(f"No verification method defined for package {package_name}. Skipping verification.")
+            # Log to main console as well for visibility
+            logging.warning(f"[{ssh_client.hostname}] No verification method defined for package {package_name}. Skipping verification.")
 
         # Run post-install commands if they exist
         if "post_install_cmds" in package_config:
             ssh_client.logger.info(f"Running post-install commands for {package_name}...")
             logging.info(f"[{ssh_client.hostname}] Running post-install commands for {package_name}...")
             for cmd in package_config["post_install_cmds"]:
-                ssh_client.execute(cmd)
+                # Also prepend PATH export here for consistency.
+                full_cmd = f"export PATH=$PATH:/usr/local/bin && {cmd}"
+                ssh_client.execute(full_cmd)
 
         # 6. Clean up remote files if requested
         if cleanup:
@@ -231,8 +293,8 @@ def deploy_to_host(hostname, user, password, key_file, packages_to_deploy, packa
 
         # Iterate through the packages and deploy each one
         for package in packages_to_deploy:
-            local_tar_path = Path(packages_dir) / package["tar_filename"]
-            
+            # Use the pre-resolved path from the main thread
+            local_tar_path = package["_local_tar_path"]
             deploy_package(
                 ssh_client=ssh,
                 package_config=package,
@@ -250,6 +312,80 @@ def deploy_to_host(hostname, user, password, key_file, packages_to_deploy, packa
     finally:
         if ssh:
             ssh.close()
+
+def find_package_file(package_config, packages_dir):
+    """
+    Finds the package tarball in the local packages directory based on regex.
+
+    It constructs a regex from the package name and an optional version.
+    - If `version` is specified (e.g., "1.1.0"), it looks for that exact version.
+    - If `min_version` is specified (e.g., "1.4.0"), it finds the latest version that is >= 1.4.0.
+    - If neither is specified, it finds the file with the highest version number.
+
+    Args:
+        package_config (dict): The package configuration dictionary.
+        packages_dir (str or Path): The directory where package tarballs are stored.
+
+    Returns:
+        Path: The path to the found package file.
+
+    Raises:
+        FileNotFoundError: If no matching package file can be found.
+        ValueError: If both 'version' and 'min_version' are specified for the same package.
+    """
+    name = package_config['name']
+    version = package_config.get('version')
+    min_version = package_config.get('min_version')
+    packages_path = Path(packages_dir)
+    filename_pattern = package_config.get('filename_pattern')
+
+    # If a specific filename pattern is provided, use it directly.
+    if filename_pattern:
+        logging.info(f"Searching for package '{name}' using specific pattern: '{filename_pattern}' in '{packages_path}'...")
+        found_files = list(packages_path.glob(filename_pattern))
+        if not found_files:
+            raise FileNotFoundError(f"Package file for '{name}' not found using pattern '{filename_pattern}' in '{packages_path}'.")
+        # Return the first match for the glob pattern
+        return found_files[0]
+
+    if version and min_version:
+        raise ValueError(f"Package '{name}' cannot have both 'version' and 'min_version' defined.")
+
+    if version:
+        # Match a specific version. Escape dots to treat them as literals.
+        version_pattern = re.escape(version)
+        pattern = re.compile(f".*[^a-zA-Z0-9]{re.escape(name)}[^a-zA-Z0-9].*{version_pattern}.*\\.(tar|tar\\.gz|zip)$", re.IGNORECASE)
+        logging.info(f"Searching for package '{name}' with version '{version}' in '{packages_path}'...")
+        found_files = [f for f in packages_path.glob('*') if pattern.match(f.name)]
+    else:
+        # Match any version number (e.g., 1.2.3, 1.0, 2024.1)
+        pattern = re.compile(f".*[^a-zA-Z0-9]{re.escape(name)}[^a-zA-Z0-9].*(\\d+(\\.\\d+)*).*\\.(tar|tar\\.gz|zip)$", re.IGNORECASE)
+        
+        if min_version:
+            logging.info(f"Searching for package '{name}' with minimum version '{min_version}' in '{packages_path}'...")
+            min_version_tuple = tuple(map(int, min_version.split('.')))
+            
+            candidate_files = []
+            for f in packages_path.glob('*'):
+                match = pattern.match(f.name)
+                if match:
+                    file_version_str = match.group(1)
+                    file_version_tuple = tuple(map(int, file_version_str.split('.')))
+                    if file_version_tuple >= min_version_tuple:
+                        candidate_files.append(f)
+            found_files = candidate_files
+        else:
+            logging.info(f"Searching for the latest version of package '{name}' in '{packages_path}'...")
+            found_files = [f for f in packages_path.glob('*') if pattern.match(f.name)]
+
+    if not found_files:
+        raise FileNotFoundError(f"No package file found for '{name}' with specified criteria in '{packages_path}'.")
+
+    # If we are not matching an exact version, sort to find the latest.
+    if not version:
+        found_files.sort(key=lambda p: tuple(map(int, (pattern.match(p.name).group(1).split('.')))), reverse=True)
+    
+    return found_files[0]
 
 def check_host_ssh(hostname, user, password, key_filename):
     """
@@ -285,13 +421,16 @@ def main():
     parser.add_argument("--packages-dir", default=".", help="Local directory where package tarballs are located (default: current directory).")
     parser.add_argument("--skip-packages", nargs='+', help="A list of package names (from the config file) to skip during deployment.")
     parser.add_argument("--only-packages", nargs='+', help="Only deploy packages from this explicit list, ignoring all others.")
-    
+    # dry-run argument, to show what would be done without making changes.
+    parser.add_argument("--dry-run", action="store_true", help="Show which packages and versions would be deployed without connecting to hosts.")
     args = parser.parse_args()
 
+    # Validate authentication method
     if not args.password and not args.key_file:
         logging.error("You must provide either a password (--password) or a key file (--key-file).")
         sys.exit(1)
 
+    # Validate that skip-packages and only-packages are not both used
     if args.skip_packages and args.only_packages:
         logging.error("Error: --skip-packages and --only-packages cannot be used at the same time.")
         sys.exit(1)
@@ -301,6 +440,11 @@ def main():
         with open(args.config_file, 'r') as f:
             all_packages = json.load(f)
         logging.info(f"Loaded {len(all_packages)} total package definition(s) from '{args.config_file}'.")
+
+        # Validate that all packages have a 'name'
+        if any('name' not in pkg for pkg in all_packages):
+            logging.error(f"Error: All entries in '{args.config_file}' must have a 'name' key.")
+            sys.exit(1)
 
         # Filter out any packages specified to be skipped
         packages_to_deploy = all_packages
@@ -318,7 +462,33 @@ def main():
             skipped_names = [pkg.get('name') for pkg in all_packages if pkg.get('name') in skipped_packages_set]
             logging.info(f"Skipping {len(skipped_names)} package(s): {', '.join(skipped_names)}")
         
+        # --- Resolve package file paths before deployment ---
+        try:
+            for pkg in packages_to_deploy:
+                found_path = find_package_file(pkg, args.packages_dir)
+                pkg['_local_tar_path'] = found_path # Store path for later use
+                logging.info(f"Resolved package '{pkg['name']}': Found '{found_path.name}'")
+        except FileNotFoundError as e:
+            logging.error(f"Failed to find a required package file: {e}")
+            sys.exit(1)
+
         logging.info(f"Found {len(packages_to_deploy)} package(s) to deploy.")
+
+        # --- Handle Dry Run ---
+        if args.dry_run:
+            logging.info("\n" + "="*20 + " DRY RUN MODE " + "="*20)
+            logging.info("The following actions would be performed. No remote connections will be made.")
+            
+            if not packages_to_deploy:
+                logging.info("No packages selected for deployment.")
+            else:
+                for host in args.hostnames:
+                    logging.info(f"\n--- Plan for Host: {host} ---")
+                    for pkg in packages_to_deploy:
+                        logging.info(f"  - Would deploy package '{pkg['name']}' using file '{pkg['_local_tar_path'].name}'")
+            
+            logging.info("\n" + "="*20 + " END DRY RUN " + "="*20)
+            sys.exit(0)
 
         # --- Phase 1: Pre-flight SSH Checks ---
         logging.info("\n" + "="*20 + " PHASE 1: PRE-FLIGHT CHECKS " + "="*20)
