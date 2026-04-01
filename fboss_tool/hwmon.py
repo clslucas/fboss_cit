@@ -157,3 +157,7 @@ class Hwmon():
             "-------------------------------------------------------------------------"
         )
         return self.print_data_format()
+
+if __name__ == "__main__":
+    hwmon_tester = Hwmon()
+    hwmon_tester.hwmon_test()
